@@ -1,14 +1,20 @@
 export class ProceduralAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
-  private engineOsc: OscillatorNode | null = null;
+  private engineOsc1: OscillatorNode | null = null;
   private engineOsc2: OscillatorNode | null = null;
+  private engineSubOsc: OscillatorNode | null = null;
+  private engineFilter: BiquadFilterNode | null = null;
   private engineGain: GainNode | null = null;
+  private turboOsc: OscillatorNode | null = null;
+  private turboGain: GainNode | null = null;
+
   private muted = false;
   private musicTimer: number | null = null;
   private musicStep = 0;
-  private musicTempoMs = 155;
+  private musicTempoMs = 152;
   private isPlayingMusic = false;
+  private engineInitialized = false;
 
   public init(): void {
     if (this.ctx) {
@@ -17,43 +23,87 @@ export class ProceduralAudioEngine {
       }
       return;
     }
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
 
     this.ctx = new AudioCtx();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = this.muted ? 0 : 0.42;
+    this.masterGain.gain.value = this.muted ? 0 : 0.44;
     this.masterGain.connect(this.ctx.destination);
 
-    // Continuous kart engine synth
+    this.setupEngineSynth();
+  }
+
+  private setupEngineSynth(): void {
+    if (!this.ctx || !this.masterGain || this.engineInitialized) return;
+    this.engineInitialized = true;
+
     this.engineGain = this.ctx.createGain();
     this.engineGain.gain.value = 0;
 
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 420;
+    // Warm soft-clipping waveshaper for punchy arcade kart growl
+    const shaper = this.ctx.createWaveShaper();
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const x = (i * 2) / 256 - 1;
+      curve[i] = ((3 + 10) * x * 20 * (Math.PI / 180)) / (Math.PI + 10 * Math.abs(x));
+    }
+    shaper.curve = curve;
 
-    this.engineOsc = this.ctx.createOscillator();
-    this.engineOsc.type = 'sawtooth';
-    this.engineOsc.frequency.value = 65;
+    this.engineFilter = this.ctx.createBiquadFilter();
+    this.engineFilter.type = 'lowpass';
+    this.engineFilter.frequency.value = 340;
+    this.engineFilter.Q.value = 2.6;
+
+    // 3-harmonic kart engine voice (sawtooth fundamental + octave pulse + deep sub)
+    this.engineOsc1 = this.ctx.createOscillator();
+    this.engineOsc1.type = 'sawtooth';
+    this.engineOsc1.frequency.value = 54;
 
     this.engineOsc2 = this.ctx.createOscillator();
-    this.engineOsc2.type = 'triangle';
-    this.engineOsc2.frequency.value = 130;
+    this.engineOsc2.type = 'square';
+    this.engineOsc2.frequency.value = 108;
 
-    this.engineOsc.connect(filter);
-    this.engineOsc2.connect(filter);
-    filter.connect(this.engineGain);
+    this.engineSubOsc = this.ctx.createOscillator();
+    this.engineSubOsc.type = 'triangle';
+    this.engineSubOsc.frequency.value = 27;
+
+    const osc2Gain = this.ctx.createGain();
+    osc2Gain.gain.value = 0.28;
+    const subGain = this.ctx.createGain();
+    subGain.gain.value = 0.55;
+
+    this.engineOsc1.connect(shaper);
+    this.engineOsc2.connect(osc2Gain);
+    osc2Gain.connect(shaper);
+    this.engineSubOsc.connect(subGain);
+    subGain.connect(this.engineFilter);
+
+    shaper.connect(this.engineFilter);
+    this.engineFilter.connect(this.engineGain);
     this.engineGain.connect(this.masterGain);
 
-    this.engineOsc.start();
+    // Supercharger / Turbo whine layer for Nitro boosts
+    this.turboGain = this.ctx.createGain();
+    this.turboGain.gain.value = 0;
+    this.turboOsc = this.ctx.createOscillator();
+    this.turboOsc.type = 'sine';
+    this.turboOsc.frequency.value = 420;
+    this.turboOsc.connect(this.turboGain);
+    this.turboGain.connect(this.masterGain);
+
+    this.engineOsc1.start();
     this.engineOsc2.start();
+    this.engineSubOsc.start();
+    this.turboOsc.start();
   }
 
   public setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setTargetAtTime(muted ? 0 : 0.42, this.ctx.currentTime, 0.03);
+      this.masterGain.gain.setTargetAtTime(muted ? 0 : 0.44, this.ctx.currentTime, 0.03);
     }
   }
 
@@ -61,17 +111,60 @@ export class ProceduralAudioEngine {
     return this.muted;
   }
 
-  public updateEngine(speedRatio: number, isBoosting: boolean, isRacing: boolean): void {
-    if (!this.ctx || !this.engineGain || !this.engineOsc || !this.engineOsc2) return;
-    if (!isRacing) {
-      this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
+  public updateEngine(
+    speedRatio: number,
+    isBoosting: boolean,
+    isRacing: boolean,
+    throttleActive = false,
+    isCountdown = false
+  ): void {
+    if (
+      !this.ctx ||
+      !this.engineGain ||
+      !this.engineOsc1 ||
+      !this.engineOsc2 ||
+      !this.engineSubOsc ||
+      !this.engineFilter ||
+      !this.turboGain ||
+      !this.turboOsc
+    ) {
       return;
     }
-    const baseFreq = 58 + Math.min(speedRatio, 1.35) * 115 + (isBoosting ? 42 : 0);
-    this.engineOsc.frequency.setTargetAtTime(baseFreq, this.ctx.currentTime, 0.05);
-    this.engineOsc2.frequency.setTargetAtTime(baseFreq * 1.98, this.ctx.currentTime, 0.05);
-    const vol = 0.06 + Math.min(speedRatio, 1) * 0.07 + (isBoosting ? 0.05 : 0);
-    this.engineGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.06);
+
+    const now = this.ctx.currentTime;
+    if (!isRacing && !isCountdown) {
+      this.engineGain.gain.setTargetAtTime(0, now, 0.08);
+      this.turboGain.gain.setTargetAtTime(0, now, 0.06);
+      return;
+    }
+
+    // Smooth 3-gear simulated RPM curve for realistic revving feel
+    const clampedSpd = Math.max(0, Math.min(1.4, speedRatio));
+    let rpmRatio = clampedSpd;
+    if (clampedSpd > 0.38 && clampedSpd < 0.72) {
+      rpmRatio = 0.28 + ((clampedSpd - 0.38) / 0.34) * 0.56;
+    } else if (clampedSpd >= 0.72) {
+      rpmRatio = 0.44 + ((clampedSpd - 0.72) / 0.68) * 0.85;
+    }
+
+    const idleRev = isCountdown ? (throttleActive ? 0.58 : 0.08) : throttleActive && clampedSpd < 0.15 ? 0.32 : 0;
+    const effRpm = Math.max(rpmRatio, idleRev);
+    const flutter = Math.sin(now * 48) * (throttleActive ? 2.2 : 0.8);
+
+    const baseFreq = 48 + effRpm * 104 + (isBoosting ? 32 : 0) + flutter;
+    this.engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.04);
+    this.engineOsc2.frequency.setTargetAtTime(baseFreq * 1.5, now, 0.04);
+    this.engineSubOsc.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.04);
+
+    const cutoff = 260 + effRpm * 820 + (throttleActive ? 260 : 0) + (isBoosting ? 640 : 0);
+    this.engineFilter.frequency.setTargetAtTime(cutoff, now, 0.05);
+
+    const vol = (isCountdown ? 0.055 : 0.075) + effRpm * 0.068 + (isBoosting ? 0.04 : 0);
+    this.engineGain.gain.setTargetAtTime(vol, now, 0.05);
+
+    // Supercharger whine when nitro/boost active
+    this.turboOsc.frequency.setTargetAtTime(520 + effRpm * 420, now, 0.06);
+    this.turboGain.gain.setTargetAtTime(isBoosting ? 0.045 : 0, now, 0.05);
   }
 
   private playTone(
@@ -92,7 +185,7 @@ export class ProceduralAudioEngine {
       osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), now + duration);
     }
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(gainVal, now + 0.015);
+    gain.gain.linearRampToValueAtTime(gainVal, now + 0.012);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     osc.connect(gain);
@@ -101,71 +194,137 @@ export class ProceduralAudioEngine {
     osc.stop(now + duration + 0.02);
   }
 
+  private playNoiseBurst(duration: number, filterFreq: number, gainVal: number, delay = 0): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const len = Math.max(128, Math.floor(this.ctx.sampleRate * duration));
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = filterFreq;
+    filter.Q.value = 1.2;
+
+    const gain = this.ctx.createGain();
+    const now = this.ctx.currentTime + delay;
+    gain.gain.setValueAtTime(gainVal, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    src.start(now);
+  }
+
   public playSelect(): void {
     this.init();
-    this.playTone(523.25, 0.08, 'triangle', 0.14, 659.25);
-    this.playTone(783.99, 0.12, 'sine', 0.12, undefined, 0.05);
+    this.playTone(587.33, 0.075, 'triangle', 0.14, 783.99);
+    this.playTone(987.77, 0.11, 'sine', 0.12, undefined, 0.045);
   }
 
   public playHop(): void {
-    this.playTone(220, 0.11, 'sine', 0.15, 480);
+    // Classic MK kart hop boing
+    this.playTone(196, 0.09, 'sine', 0.16, 460);
+    this.playTone(392, 0.08, 'triangle', 0.09, 620, 0.015);
   }
 
   public playDriftLevel(level: number): void {
-    const base = level === 1 ? 520 : level === 2 ? 720 : 980;
-    this.playTone(base, 0.12, 'sawtooth', 0.1, base * 1.25);
+    // Classic ascending mini-turbo spark chime
+    const base = level === 1 ? 587.33 : level === 2 ? 783.99 : 1046.5;
+    this.playTone(base, 0.11, 'square', 0.09, base * 1.18);
+    this.playTone(base * 1.5, 0.14, 'triangle', 0.12, undefined, 0.025);
   }
 
   public playBoost(power = 1): void {
-    this.playTone(180 * power, 0.28, 'sawtooth', 0.18, 620 * power);
-    this.playTone(360 * power, 0.32, 'triangle', 0.12, 880 * power, 0.03);
+    // Whoosh noise + rising turbo power chord
+    this.playNoiseBurst(0.32, 950 * power, 0.18);
+    this.playTone(196 * power, 0.26, 'sawtooth', 0.16, 680 * power);
+    this.playTone(392 * power, 0.3, 'triangle', 0.13, 987 * power, 0.025);
   }
 
   public playCountdown(go: boolean): void {
     this.init();
     if (go) {
-      this.playTone(880, 0.36, 'square', 0.16);
-      this.playTone(1174.66, 0.42, 'triangle', 0.14, undefined, 0.04);
+      // Iconic bright starting chord (F5 + A5 + C6 + F6)
+      this.playTone(698.46, 0.42, 'square', 0.11);
+      this.playTone(880.0, 0.44, 'triangle', 0.13, undefined, 0.01);
+      this.playTone(1046.5, 0.48, 'triangle', 0.14, undefined, 0.02);
+      this.playTone(1396.91, 0.48, 'sine', 0.12, undefined, 0.03);
     } else {
-      this.playTone(440, 0.18, 'square', 0.13);
+      // Iconic Mario Kart low-pitched pip
+      this.playTone(349.23, 0.19, 'square', 0.12, 342);
+      this.playTone(698.46, 0.16, 'triangle', 0.07);
     }
   }
 
   public playItemBox(): void {
-    this.playTone(660, 0.07, 'square', 0.12);
-    this.playTone(880, 0.07, 'square', 0.12, undefined, 0.07);
-    this.playTone(1046.5, 0.14, 'triangle', 0.15, undefined, 0.14);
+    // Glassy crystal shatter + box chime
+    this.playNoiseBurst(0.14, 2400, 0.14);
+    this.playTone(783.99, 0.07, 'square', 0.1);
+    this.playTone(1046.5, 0.09, 'triangle', 0.13, undefined, 0.05);
+  }
+
+  public playRouletteTick(step: number): void {
+    // Rapid MK slot-machine blip alternating tones
+    const notes = [659.25, 783.99, 880.0, 987.77, 1046.5, 1174.66];
+    const freq = notes[step % notes.length];
+    this.playTone(freq, 0.05, 'triangle', 0.09);
+  }
+
+  public playItemClaim(): void {
+    // Iconic MK item lock-in celebratory chime!
+    this.playTone(1046.5, 0.08, 'square', 0.1);
+    this.playTone(1318.51, 0.09, 'triangle', 0.13, undefined, 0.05);
+    this.playTone(1567.98, 0.18, 'triangle', 0.15, undefined, 0.1);
   }
 
   public playShellFire(): void {
-    this.playTone(340, 0.16, 'sawtooth', 0.16, 120);
+    this.playNoiseBurst(0.12, 1200, 0.15);
+    this.playTone(460, 0.16, 'sawtooth', 0.15, 140);
   }
 
   public playHit(): void {
-    this.playTone(240, 0.3, 'sawtooth', 0.22, 55);
-    this.playTone(160, 0.35, 'square', 0.16, 42, 0.04);
+    this.playNoiseBurst(0.28, 450, 0.24);
+    this.playTone(260, 0.32, 'sawtooth', 0.22, 48);
+    this.playTone(185, 0.36, 'square', 0.15, 38, 0.03);
   }
 
   public playLap(finalLap: boolean): void {
     if (finalLap) {
-      const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
-      notes.forEach((n, idx) => this.playTone(n, 0.16, 'square', 0.14, undefined, idx * 0.08));
+      // Iconic Mario Kart Final Lap warning siren + upbeat tempo shift
+      const notes = [587.33, 739.99, 880.0, 1174.66, 880.0, 1174.66];
+      notes.forEach((n, idx) =>
+        this.playTone(n, idx === notes.length - 1 ? 0.34 : 0.13, 'square', 0.13, undefined, idx * 0.075)
+      );
       this.setFinalLapTempo(true);
     } else {
-      this.playTone(587.33, 0.12, 'triangle', 0.16);
-      this.playTone(880, 0.22, 'triangle', 0.16, undefined, 0.1);
+      // Lakitu lap chime
+      this.playTone(659.25, 0.1, 'triangle', 0.15);
+      this.playTone(987.77, 0.24, 'triangle', 0.16, undefined, 0.09);
     }
   }
 
   public playFinish(): void {
-    const fanfare = [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5];
+    const fanfare = [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.51];
     fanfare.forEach((n, idx) =>
-      this.playTone(n, idx === fanfare.length - 1 ? 0.5 : 0.14, 'triangle', 0.18, undefined, idx * 0.12)
+      this.playTone(
+        n,
+        idx === fanfare.length - 1 ? 0.56 : 0.14,
+        idx % 2 === 0 ? 'triangle' : 'square',
+        0.14,
+        undefined,
+        idx * 0.11
+      )
     );
   }
 
   public setFinalLapTempo(finalLap: boolean): void {
-    const nextTempo = finalLap ? 118 : 155;
+    const nextTempo = finalLap ? 114 : 152;
     if (nextTempo === this.musicTempoMs) return;
     this.musicTempoMs = nextTempo;
     if (this.isPlayingMusic) {
@@ -178,16 +337,22 @@ export class ProceduralAudioEngine {
     this.init();
     if (this.isPlayingMusic) return;
     this.isPlayingMusic = true;
-    const bassSeq = [130.81, 130.81, 164.81, 196.0, 146.83, 146.83, 174.61, 196.0, 130.81, 130.81, 196.0, 220.0, 174.61, 196.0, 246.94, 196.0];
-    const leadSeq = [523.25, 0, 659.25, 783.99, 659.25, 0, 587.33, 659.25, 523.25, 783.99, 880.0, 0, 783.99, 659.25, 587.33, 659.25];
+    const bassSeq = [
+      130.81, 130.81, 164.81, 196.0, 146.83, 146.83, 174.61, 196.0, 130.81, 130.81, 196.0, 220.0,
+      174.61, 196.0, 246.94, 196.0,
+    ];
+    const leadSeq = [
+      523.25, 0, 659.25, 783.99, 659.25, 0, 587.33, 659.25, 523.25, 783.99, 880.0, 0, 783.99,
+      659.25, 587.33, 659.25,
+    ];
 
     this.musicTimer = window.setInterval(() => {
       if (!this.ctx || this.muted || this.ctx.state !== 'running') return;
       const idx = this.musicStep % bassSeq.length;
-      this.playTone(bassSeq[idx], 0.12, 'triangle', 0.065);
+      this.playTone(bassSeq[idx], 0.11, 'triangle', 0.055);
       const lead = leadSeq[idx];
       if (lead > 0) {
-        this.playTone(lead, 0.11, 'square', 0.042);
+        this.playTone(lead, 0.1, 'square', 0.036);
       }
       this.musicStep++;
     }, this.musicTempoMs);
@@ -204,8 +369,10 @@ export class ProceduralAudioEngine {
   public dispose(): void {
     this.stopMusic();
     try {
-      this.engineOsc?.stop();
+      this.engineOsc1?.stop();
       this.engineOsc2?.stop();
+      this.engineSubOsc?.stop();
+      this.turboOsc?.stop();
       void this.ctx?.close();
     } catch {
       // ignore close errors

@@ -191,6 +191,7 @@ async function bootstrap() {
           id: playerId,
           name: (msg.playerName || 'Driver').slice(0, 16),
           characterId: msg.characterId || 'mario',
+          vehicleId: msg.vehicleId || 'standard_kart',
           ready: false,
           isHost: room.players.size === 0,
           slotIndex: assignNextSlot(room),
@@ -217,6 +218,9 @@ async function bootstrap() {
 
       if (msg.type === 'room:selectCharacter') {
         player.characterId = msg.characterId;
+        broadcastRoom(room);
+      } else if (msg.type === 'room:selectVehicle') {
+        player.vehicleId = msg.vehicleId;
         broadcastRoom(room);
       } else if (msg.type === 'room:setReady') {
         player.ready = msg.ready;

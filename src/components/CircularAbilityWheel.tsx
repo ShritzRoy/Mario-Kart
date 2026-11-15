@@ -158,20 +158,20 @@ export function CircularAbilityWheel({
         )}
       </button>
 
-      {/* Floating Ability Label (transparent drop-shadowed typography, no boxy clutter) */}
-      <div className="flex flex-col leading-tight drop-shadow-[0_2px_6px_rgba(0,0,0,0.92)]">
-        <span className="font-hud text-[10px] sm:text-xs font-bold uppercase tracking-widest text-amber-300">
+      {/* Floating Ability Label (transparent drop-shadowed multi-color MK typography) */}
+      <div className="flex flex-col leading-tight">
+        <span className="font-mk text-[10px] sm:text-xs uppercase tracking-widest text-amber-300 mk-stroke-sm">
           {rouletteActive ? 'SPINNING...' : hasItem ? 'READY · PRESS X' : 'ABILITY SLOT'}
         </span>
         <span
-          className={`font-arcade uppercase tracking-wide whitespace-nowrap ${
+          className={`font-mk uppercase tracking-wide whitespace-nowrap mk-stroke-sm ${
             deviceTier === 'desktop'
               ? 'text-lg'
               : deviceTier === 'tablet'
               ? 'text-sm'
               : 'text-xs'
           }`}
-          style={{ color: displayedItem === 'none' ? '#cbd5e1' : '#ffffff' }}
+          style={{ color: displayedItem === 'none' ? '#cbd5e1' : vis.ring }}
         >
           {rouletteActive ? vis.name : heldItem === 'none' ? 'Empty' : vis.name}
         </span>

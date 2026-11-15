@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { ItemKind } from '../shared/protocol.ts';
 import { getRacerById, type RacerSpec } from './roster.ts';
+import { getVehicleById, type VehicleId, type VehicleSpec } from './vehicles.ts';
 import {
   BARRIER_HALF_WIDTH,
   SAMPLE_COUNT,
@@ -25,6 +26,7 @@ export interface KartPhysicsState {
   id: string;
   name: string;
   spec: RacerSpec;
+  vehicle: VehicleSpec;
   isPlayer: boolean;
   isRemoteHuman: boolean;
   x: number;
@@ -44,6 +46,7 @@ export interface KartPhysicsState {
   boostReason: BoostReason;
   starTimer: number;
   spinTimer: number;
+  claimSpinTimer: number;
   heldItem: ItemKind;
   rouletteTimer: number;
   lap: number;
@@ -81,6 +84,7 @@ export interface PhysicsCallbacks {
   onDriftLevel: (kart: KartPhysicsState, level: number) => void;
   onBoost: (kart: KartPhysicsState, power: number, reason: BoostReason) => void;
   onItemPickup: (kart: KartPhysicsState, item: ItemKind) => void;
+  onItemClaim?: (kart: KartPhysicsState, item: ItemKind) => void;
   onItemUse: (kart: KartPhysicsState, item: ItemKind) => void;
   onHit: (
     victim: KartPhysicsState,
@@ -100,9 +104,11 @@ export function createKartState(
   gridSlot: number,
   track: StadiumTrack,
   isPlayer: boolean,
-  isRemoteHuman: boolean
+  isRemoteHuman: boolean,
+  vehicleId: VehicleId | string = 'standard_kart'
 ): KartPhysicsState {
   const spec = getRacerById(characterId);
+  const vehicle = getVehicleById(vehicleId);
   const row = Math.floor(gridSlot / 2);
   const col = gridSlot % 2 === 0 ? -1 : 1;
   const startIdx = (SAMPLE_COUNT - 8 - row * 4 + SAMPLE_COUNT) % SAMPLE_COUNT;
@@ -116,6 +122,7 @@ export function createKartState(
     id,
     name,
     spec,
+    vehicle,
     isPlayer,
     isRemoteHuman,
     x,
@@ -135,6 +142,7 @@ export function createKartState(
     boostReason: 'drift',
     starTimer: 0,
     spinTimer: 0,
+    claimSpinTimer: 0,
     heldItem: 'none',
     rouletteTimer: 0,
     lap: 1,
@@ -201,15 +209,27 @@ export function stepKartPhysics(
     effectiveInput = computeAiInput(kart, track, playerProgress);
   }
 
-  // Normalized arcade speed tuning (~48..63 u/s cruise -> 135..180 km/h; boost -> 210..260 km/h)
-  const baseTopSpeed = 48 + (kart.spec.stats.topSpeed / 100) * 15;
-  const accelRate = 25 + (kart.spec.stats.acceleration / 100) * 20;
-  const turnRate = 1.65 + (kart.spec.stats.handling / 100) * 0.85;
+  // Combine driver stats + chosen vehicle deltas (clamped 25..100)
+  const effTopSpeed = THREE.MathUtils.clamp(kart.spec.stats.topSpeed + kart.vehicle.deltas.topSpeed, 25, 100);
+  const effAccel = THREE.MathUtils.clamp(kart.spec.stats.acceleration + kart.vehicle.deltas.acceleration, 25, 100);
+  const effHandling = THREE.MathUtils.clamp(kart.spec.stats.handling + kart.vehicle.deltas.handling, 25, 100);
+
+  // Normalized arcade speed tuning (~34..42 u/s cruise -> 105..130 km/h; fair boost -> 135..170 km/h)
+  const baseTopSpeed = 34 + (effTopSpeed / 100) * 8;
+  const accelRate = 22 + (effAccel / 100) * 14;
+  const turnRate = 1.78 + (effHandling / 100) * 0.72;
 
   if (kart.spinTimer > 0) kart.spinTimer = Math.max(0, kart.spinTimer - dt);
+  if (kart.claimSpinTimer > 0) kart.claimSpinTimer = Math.max(0, kart.claimSpinTimer - dt);
   if (kart.boostTimer > 0) kart.boostTimer = Math.max(0, kart.boostTimer - dt);
   if (kart.starTimer > 0) kart.starTimer = Math.max(0, kart.starTimer - dt);
-  if (kart.rouletteTimer > 0) kart.rouletteTimer = Math.max(0, kart.rouletteTimer - dt);
+  if (kart.rouletteTimer > 0) {
+    kart.rouletteTimer = Math.max(0, kart.rouletteTimer - dt);
+    if (kart.rouletteTimer === 0 && kart.heldItem !== 'none') {
+      kart.claimSpinTimer = 0.52;
+      cb.onItemClaim?.(kart, kart.heldItem);
+    }
+  }
   if (kart.padCooldown > 0) kart.padCooldown = Math.max(0, kart.padCooldown - dt);
   if (kart.rampCooldown > 0) kart.rampCooldown = Math.max(0, kart.rampCooldown - dt);
   if (kart.hazardCooldown > 0) kart.hazardCooldown = Math.max(0, kart.hazardCooldown - dt);
@@ -240,22 +260,22 @@ export function stepKartPhysics(
 
   // Nitro Boost Pad interaction
   if (proj.onBoostPad && kart.padCooldown <= 0) {
-    kart.padCooldown = 0.65;
-    kart.boostTimer = Math.max(kart.boostTimer, 1.25);
-    kart.boostStrength = Math.max(kart.boostStrength, 1.38);
+    kart.padCooldown = 0.7;
+    kart.boostTimer = Math.max(kart.boostTimer, 1.1);
+    kart.boostStrength = Math.max(kart.boostStrength, 1.24);
     kart.boostReason = 'nitro';
-    cb.onBoost(kart, 1.2, 'nitro');
+    cb.onBoost(kart, 1.1, 'nitro');
   }
 
   // Ramp Launch -> Air Boost!
-  if (proj.onRamp && kart.grounded && kart.speed > 24 && kart.rampCooldown <= 0) {
+  if (proj.onRamp && kart.grounded && kart.speed > 18 && kart.rampCooldown <= 0) {
     kart.rampCooldown = 1.1;
-    kart.hopVelY = 12.8;
+    kart.hopVelY = 11.2;
     kart.grounded = false;
-    kart.boostTimer = Math.max(kart.boostTimer, 1.15);
-    kart.boostStrength = Math.max(kart.boostStrength, 1.34);
+    kart.boostTimer = Math.max(kart.boostTimer, 1.0);
+    kart.boostStrength = Math.max(kart.boostStrength, 1.2);
     kart.boostReason = 'air';
-    cb.onBoost(kart, 1.15, 'air');
+    cb.onBoost(kart, 1.05, 'air');
   }
 
   // Determine steering value (-1 right to +1 left in heading coordinates)
@@ -270,10 +290,10 @@ export function stepKartPhysics(
 
   // Hop & Drift Initiation
   if (effectiveInput.hopJustPressed && kart.grounded && kart.spinTimer <= 0) {
-    kart.hopVelY = 7.4;
+    kart.hopVelY = 7.2;
     kart.grounded = false;
     cb.onHop(kart);
-    if (steerSign !== 0 && kart.speed > 18) {
+    if (steerSign !== 0 && kart.speed > 14) {
       kart.driftDir = steerSign; // +1 left, -1 right
       kart.driftCharge = 0;
       kart.driftLevel = 0;
@@ -282,7 +302,7 @@ export function stepKartPhysics(
 
   // Hop vertical gravity
   if (!kart.grounded || kart.hopY > 0) {
-    kart.hopVelY -= 29 * dt;
+    kart.hopVelY -= 28 * dt;
     kart.hopY += kart.hopVelY * dt;
     if (kart.hopY <= 0) {
       kart.hopY = 0;
@@ -293,14 +313,14 @@ export function stepKartPhysics(
 
   // Active Drift charging & Level-based Nitro release
   if (kart.driftDir !== 0) {
-    if (!effectiveInput.hop || kart.speed < 15 || kart.spinTimer > 0) {
+    if (!effectiveInput.hop || kart.speed < 12 || kart.spinTimer > 0) {
       if (kart.driftLevel > 0) {
-        const durations = [0, 0.85, 1.45, 2.25];
-        const strengths = [1, 1.28, 1.4, 1.54];
+        const durations = [0, 0.75, 1.25, 1.75];
+        const strengths = [1, 1.15, 1.22, 1.3];
         kart.boostTimer = Math.max(kart.boostTimer, durations[kart.driftLevel]);
         kart.boostStrength = Math.max(kart.boostStrength, strengths[kart.driftLevel]);
         kart.boostReason = 'drift';
-        cb.onBoost(kart, 0.9 + kart.driftLevel * 0.24, 'drift');
+        cb.onBoost(kart, 0.85 + kart.driftLevel * 0.18, 'drift');
       }
       kart.driftDir = 0;
       kart.driftCharge = 0;
@@ -309,9 +329,9 @@ export function stepKartPhysics(
       const inwardBonus = steerSign === kart.driftDir ? 1.5 : 0.78;
       kart.driftCharge += dt * inwardBonus;
       const prevLv = kart.driftLevel;
-      if (kart.driftCharge >= 2.5) kart.driftLevel = 3;
-      else if (kart.driftCharge >= 1.45) kart.driftLevel = 2;
-      else if (kart.driftCharge >= 0.62) kart.driftLevel = 1;
+      if (kart.driftCharge >= 2.4) kart.driftLevel = 3;
+      else if (kart.driftCharge >= 1.4) kart.driftLevel = 2;
+      else if (kart.driftCharge >= 0.58) kart.driftLevel = 1;
       if (kart.driftLevel > prevLv) {
         cb.onDriftLevel(kart, kart.driftLevel);
       }
@@ -319,7 +339,7 @@ export function stepKartPhysics(
   }
 
   // Steering & Heading integration
-  const speedSteerScale = Math.min(1, Math.abs(kart.speed) / 14);
+  const speedSteerScale = Math.min(1, Math.abs(kart.speed) / 11);
   const reverseSign = kart.speed < -0.5 ? -1 : 1;
   if (kart.spinTimer <= 0) {
     if (kart.driftDir !== 0) {
@@ -341,30 +361,30 @@ export function stepKartPhysics(
   let maxSpd = baseTopSpeed;
   if (!kart.isPlayer && !kart.finished && !isTimeTrial) {
     const gap = playerProgress - kart.totalProgress;
-    const rubber = THREE.MathUtils.clamp(gap * 12, -5.0, 7.0);
+    const rubber = THREE.MathUtils.clamp(gap * 7.5, -3.5, 4.2);
     maxSpd += rubber;
   }
-  if (kart.starTimer > 0) maxSpd *= 1.32;
+  if (kart.starTimer > 0) maxSpd *= 1.24;
   else if (kart.boostTimer > 0) maxSpd *= kart.boostStrength;
-  if (isOffroad) maxSpd *= 0.64;
+  if (isOffroad) maxSpd *= 0.66;
 
   if (kart.spinTimer > 0) {
     kart.speed = THREE.MathUtils.lerp(kart.speed, 0, dt * 4.5);
   } else if (effectiveInput.throttle) {
-    const accelMul = kart.boostTimer > 0 || kart.starTimer > 0 ? 2.4 : 1.0;
+    const accelMul = kart.boostTimer > 0 || kart.starTimer > 0 ? 2.0 : 1.0;
     kart.speed = Math.min(maxSpd, kart.speed + accelRate * accelMul * dt);
   } else if (effectiveInput.brake) {
     if (kart.speed > 2) {
       kart.speed = Math.max(0, kart.speed - accelRate * 2.1 * dt);
     } else {
-      kart.speed = Math.max(-18, kart.speed - accelRate * 0.85 * dt);
+      kart.speed = Math.max(-14, kart.speed - accelRate * 0.85 * dt);
     }
   } else {
-    kart.speed = THREE.MathUtils.lerp(kart.speed, 0, dt * 1.45);
+    kart.speed = THREE.MathUtils.lerp(kart.speed, 0, dt * 1.6);
   }
 
-  if (kart.boostTimer > 0 && kart.speed < maxSpd * 0.9) {
-    kart.speed = THREE.MathUtils.lerp(kart.speed, maxSpd, dt * 6);
+  if (kart.boostTimer > 0 && kart.speed < maxSpd * 0.92) {
+    kart.speed = THREE.MathUtils.lerp(kart.speed, maxSpd, dt * 5.2);
   }
 
   // Integrate XZ motion
@@ -373,13 +393,13 @@ export function stepKartPhysics(
   kart.wheelAngle += kart.speed * dt * 2.3;
 
   const postProj = track.projectOnTrack(kart.x, kart.z, kart.trackIndex);
-  kart.y = THREE.MathUtils.lerp(kart.y, postProj.point.y, dt * 16);
+  kart.y = Math.max(postProj.point.y, THREE.MathUtils.lerp(kart.y, postProj.point.y, dt * 16));
 
-  // Anti-Stuck Smooth Wall-Slide Boundary Resolution against 3D Dividers
-  const wallLimit = BARRIER_HALF_WIDTH - 0.65;
+  // Anti-Stuck Smooth Wall-Slide Boundary Resolution against 3D Dividers (strictly zero tire/pod clipping)
+  const wallLimit = BARRIER_HALF_WIDTH - 1.35;
   if (Math.abs(postProj.lateral) > wallLimit) {
     const sign = Math.sign(postProj.lateral);
-    const safeLat = sign * (wallLimit - 0.25);
+    const safeLat = sign * (wallLimit - 0.15);
     kart.x = postProj.point.x + postProj.right.x * safeLat;
     kart.z = postProj.point.z + postProj.right.z * safeLat;
 
@@ -449,14 +469,14 @@ export function stepKartPhysics(
     const used = kart.heldItem;
     kart.heldItem = 'none';
     if (used === 'mushroom') {
-      kart.boostTimer = 1.65;
-      kart.boostStrength = 1.48;
+      kart.boostTimer = 1.4;
+      kart.boostStrength = 1.28;
       kart.boostReason = 'mushroom';
-      cb.onBoost(kart, 1.3, 'mushroom');
+      cb.onBoost(kart, 1.2, 'mushroom');
     } else if (used === 'star') {
-      kart.starTimer = 6.5;
+      kart.starTimer = 6.0;
       kart.boostReason = 'star';
-      cb.onBoost(kart, 1.35, 'star');
+      cb.onBoost(kart, 1.25, 'star');
     }
     cb.onItemUse(kart, used);
   }
@@ -473,7 +493,7 @@ function computeAiInput(kart: KartPhysicsState, track: StadiumTrack, _playerProg
   const desiredAngle = Math.atan2(tx - kart.x, tz - kart.z);
   const diff = wrapAngle(desiredAngle - kart.heading);
 
-  const shouldDrift = Math.abs(diff) > 0.34 && kart.speed > 32;
+  const shouldDrift = Math.abs(diff) > 0.34 && kart.speed > 24;
   const useItem =
     kart.heldItem !== 'none' &&
     kart.rouletteTimer <= 0 &&
@@ -509,8 +529,8 @@ export function resolveKartCollisions(karts: KartPhysicsState[], cb: PhysicsCall
         const nz = dz / d;
         const overlap = minDist - d;
 
-        const wA = a.spec.stats.weight;
-        const wB = b.spec.stats.weight;
+        const wA = THREE.MathUtils.clamp(a.spec.stats.weight + a.vehicle.deltas.weight, 25, 100);
+        const wB = THREE.MathUtils.clamp(b.spec.stats.weight + b.vehicle.deltas.weight, 25, 100);
         const ratioA = wB / (wA + wB);
         const ratioB = wA / (wA + wB);
 

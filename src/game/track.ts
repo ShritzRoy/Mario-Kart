@@ -74,9 +74,19 @@ export class StadiumTrack {
   public readonly paddockTurntable = new THREE.Group();
 
   private spectatorsMesh: THREE.InstancedMesh | null = null;
-  private spectatorCount = 720;
-  private spectatorBaseMatrices: THREE.Matrix4[] = [];
+  private spectatorHeadMesh: THREE.InstancedMesh | null = null;
+  private spectatorCapMesh: THREE.InstancedMesh | null = null;
+  private spectatorSpotMesh: THREE.InstancedMesh | null = null;
+  private spectatorCount = 0;
+  private spectatorBaseCoords: { x: number; y: number; z: number; yaw: number; scale: number }[] = [];
   private spectatorPhases: Float32Array = new Float32Array(0);
+  private crowdSpotOffsets = [
+    new THREE.Vector3(0, 1.56, 0.42),
+    new THREE.Vector3(-0.42, 1.48, -0.22),
+    new THREE.Vector3(0.42, 1.48, -0.22),
+  ];
+  private loopCx = 0;
+  private loopCz = 0;
   private holoBillboards: THREE.Mesh[] = [];
   private bannerFlags: THREE.Mesh[] = [];
   private searchlights: THREE.Group[] = [];
@@ -92,12 +102,22 @@ export class StadiumTrack {
     texture: THREE.CanvasTexture;
   }[] = [];
   private boostPadMat: THREE.MeshStandardMaterial;
+  private skyUniforms: {
+    uTop: { value: THREE.Color };
+    uMid: { value: THREE.Color };
+    uHorizon: { value: THREE.Color };
+  } | null = null;
+  private cloudMat: THREE.MeshBasicMaterial | null = null;
+  private starMat: THREE.PointsMaterial | null = null;
+  private roadMat: THREE.MeshStandardMaterial | null = null;
+  private placedProps: { x: number; z: number; r: number }[] = [];
   private disposables: { dispose: () => void }[] = [];
 
   private _tmpMat = new THREE.Matrix4();
   private _tmpPos = new THREE.Vector3();
   private _tmpQuat = new THREE.Quaternion();
   private _tmpScale = new THREE.Vector3();
+  private _upAxis = new THREE.Vector3(0, 1, 0);
 
   constructor(private textures: ProceduralTextureSet, mapDef: MapDefinition) {
     this.mapDef = mapDef;
@@ -123,40 +143,104 @@ export class StadiumTrack {
     this.buildGroundAndInfield();
     this.buildSolidRoadAndKerbs();
     this.build3DDividerBoundaries();
-    this.buildTracksideRocksAndCliffs();
     this.buildElevatedSupportsAndRamps();
     this.buildStartFinishGantry();
     this.buildBoostPads();
     this.buildItemBoxes();
     this.buildEnvironmentalHazards();
 
+    // Place signature SHRITIZ carved boulder monument & Mushroom Toad Bleachers beside the start straight on EVERY map
+    this.buildStartLineShritizMonument();
+    const crowdCoords: { x: number; y: number; z: number; yaw: number; scale: number }[] = [];
+    this.buildStartStraightBleachers(crowdCoords);
+
     if (mapDef.theme === 'plaza') {
-      this.buildShritizRockArch(0.055, true);
       this.buildShritizRockArch(0.57, true);
       this.buildCoconutPlazaEnvironment();
       this.buildPlazaFountainAndParasols();
     } else if (mapDef.theme === 'stadium') {
-      this.buildStadiumColiseum();
+      this.buildStadiumColiseum(crowdCoords);
       this.buildTunnelAndTracksideBoards();
       this.buildFloodlightsAndJumbotrons();
       this.buildConfetti();
     } else if (mapDef.theme === 'sunlit') {
-      this.buildShritizRockArch(0.06, false);
       this.buildSunlitCountrysideProps();
       this.buildHotAirBalloons();
       this.buildTunnelAndTracksideBoards();
     } else {
-      this.buildShritizRockArch(0.06, false);
       this.buildSkylineTowersAndProps();
       this.buildHotAirBalloons();
       this.buildTunnelAndTracksideBoards();
     }
 
+    this.buildToadCrowdMeshes(crowdCoords);
+
+    // Trackside sculpted rocks & foliage added after hero landmarks so nothing overlaps
+    this.buildTracksideRocksAndCliffs();
     this.buildPaddockStage();
+  }
+
+  private minTrackDistance(x: number, z: number): number {
+    let minD2 = Infinity;
+    for (let i = 0; i < this.samples.length; i++) {
+      const p = this.samples[i].point;
+      const dx = x - p.x;
+      const dz = z - p.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < minD2) minD2 = d2;
+    }
+    return Math.sqrt(minD2);
+  }
+
+  private minDistanceToOtherTrackSegment(x: number, z: number, originIdx: number, windowSamples = 22): number {
+    let minD2 = Infinity;
+    for (let i = 0; i < this.samples.length; i++) {
+      const diff = Math.abs(i - originIdx);
+      const wrapDiff = Math.min(diff, SAMPLE_COUNT - diff);
+      if (wrapDiff <= windowSamples) continue;
+      const p = this.samples[i].point;
+      const dx = x - p.x;
+      const dz = z - p.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < minD2) minD2 = d2;
+    }
+    return Math.sqrt(minD2);
+  }
+
+  private isOutwardFromLoop(x: number, z: number, s: TrackSample): boolean {
+    const outX = s.point.x - this.loopCx;
+    const outZ = s.point.z - this.loopCz;
+    const relX = x - s.point.x;
+    const relZ = z - s.point.z;
+    return relX * outX + relZ * outZ >= 0;
+  }
+
+  private canPlaceProp(x: number, z: number, radius: number, extraTrackMargin = 4.2): boolean {
+    if (this.minTrackDistance(x, z) < BARRIER_HALF_WIDTH + radius + extraTrackMargin) {
+      return false;
+    }
+    for (let i = 0; i < this.placedProps.length; i++) {
+      const p = this.placedProps[i];
+      const dx = x - p.x;
+      const dz = z - p.z;
+      const minSep = radius + p.r;
+      if (dx * dx + dz * dz < minSep * minSep) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private reserveProp(x: number, z: number, radius: number, extraTrackMargin = 4.2): boolean {
+    if (!this.canPlaceProp(x, z, radius, extraTrackMargin)) return false;
+    this.placedProps.push({ x, z, r: radius });
+    return true;
   }
 
   private sampleCurve(): void {
     const up = new THREE.Vector3(0, 1, 0);
+    let sx = 0;
+    let sz = 0;
     for (let i = 0; i < SAMPLE_COUNT; i++) {
       const t = i / SAMPLE_COUNT;
       const point = this.curve.getPointAt(t);
@@ -171,8 +255,12 @@ export class StadiumTrack {
         }
       }
 
+      sx += point.x;
+      sz += point.z;
       this.samples.push({ t, point, tangent, right });
     }
+    this.loopCx = sx / SAMPLE_COUNT;
+    this.loopCz = sz / SAMPLE_COUNT;
   }
 
   public projectOnTrack(x: number, z: number, hintIndex?: number): TrackProjection {
@@ -266,15 +354,17 @@ export class StadiumTrack {
     const midC = new THREE.Color(this.mapDef.skyMid);
     const horC = new THREE.Color(this.mapDef.skyHorizon);
 
+    this.skyUniforms = {
+      uTop: { value: topC },
+      uMid: { value: midC },
+      uHorizon: { value: horC },
+    };
+
     const skyGeo = new THREE.SphereGeometry(680, 32, 20);
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
-      uniforms: {
-        uTop: { value: topC },
-        uMid: { value: midC },
-        uHorizon: { value: horC },
-      },
+      uniforms: this.skyUniforms,
       vertexShader: `
         varying vec3 vWorldPos;
         void main() {
@@ -299,11 +389,36 @@ export class StadiumTrack {
     this.group.add(new THREE.Mesh(skyGeo, skyMat));
     this.disposables.push(skyGeo, skyMat);
 
+    // Starfield dome (visible during Night / Dusk weather)
+    const starCount = 420;
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const phi = Math.acos(0.15 + Math.random() * 0.85);
+      const theta = Math.random() * Math.PI * 2;
+      const r = 635;
+      starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      starPos[i * 3 + 1] = r * Math.cos(phi);
+      starPos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({
+      color: '#f8fafc',
+      size: 2.6,
+      transparent: true,
+      opacity: this.mapDef.theme === 'stadium' ? 0.45 : 0.0,
+      depthWrite: false,
+    });
+    this.starMat = starMat;
+    this.group.add(new THREE.Points(starGeo, starMat));
+    this.disposables.push(starGeo, starMat);
+
     const cloudMat = new THREE.MeshBasicMaterial({
       color: this.mapDef.theme === 'stadium' ? '#cbd5e1' : '#ffffff',
       transparent: true,
       opacity: this.mapDef.theme === 'stadium' ? 0.24 : 0.94,
     });
+    this.cloudMat = cloudMat;
     const puffGeo = new THREE.SphereGeometry(12, 12, 10);
     for (let i = 0; i < 18; i++) {
       const cGroup = new THREE.Group();
@@ -320,6 +435,41 @@ export class StadiumTrack {
       this.clouds.push(cGroup);
     }
     this.disposables.push(cloudMat, puffGeo);
+  }
+
+  public applyWeatherVisuals(
+    skyTop: THREE.Color,
+    skyMid: THREE.Color,
+    skyHorizon: THREE.Color,
+    wetness: number,
+    nightFactor: number,
+    rainFactor: number
+  ): void {
+    if (this.skyUniforms) {
+      this.skyUniforms.uTop.value.copy(skyTop);
+      this.skyUniforms.uMid.value.copy(skyMid);
+      this.skyUniforms.uHorizon.value.copy(skyHorizon);
+    }
+    if (this.roadMat) {
+      this.roadMat.roughness = THREE.MathUtils.lerp(0.72, 0.14, wetness);
+      this.roadMat.metalness = THREE.MathUtils.lerp(0.05, 0.42, wetness);
+    }
+    if (this.starMat) {
+      const baseNight = this.mapDef.theme === 'stadium' ? 0.35 : 0.0;
+      this.starMat.opacity = Math.min(0.95, Math.max(baseNight, nightFactor * (1 - rainFactor * 0.85)));
+    }
+    if (this.cloudMat) {
+      if (rainFactor > 0.2) {
+        this.cloudMat.color.set('#64748b').lerp(new THREE.Color('#334155'), rainFactor * 0.65);
+        this.cloudMat.opacity = THREE.MathUtils.lerp(0.85, 0.96, rainFactor);
+      } else if (nightFactor > 0.3) {
+        this.cloudMat.color.set('#475569');
+        this.cloudMat.opacity = 0.45;
+      } else {
+        this.cloudMat.color.set('#ffffff').lerp(skyHorizon, 0.25);
+        this.cloudMat.opacity = 0.92;
+      }
+    }
   }
 
   private buildGroundAndInfield(): void {
@@ -440,6 +590,7 @@ export class StadiumTrack {
       metalness: 0.05,
       side: THREE.DoubleSide,
     });
+    this.roadMat = roadMat;
     const roadMesh = new THREE.Mesh(roadGeo, roadMat);
     roadMesh.receiveShadow = true;
     this.group.add(roadMesh);
@@ -638,7 +789,7 @@ export class StadiumTrack {
       const crossY = prev.tangent.z * next.tangent.x - prev.tangent.x * next.tangent.z;
       if (Math.abs(crossY) > 0.14) {
         const outerSide = crossY > 0 ? 1 : -1;
-        const basePos = curr.point.clone().addScaledVector(curr.right, outerSide * (BARRIER_HALF_WIDTH - 0.55));
+        const basePos = curr.point.clone().addScaledVector(curr.right, outerSide * (BARRIER_HALF_WIDTH + 0.18));
         for (let stack = 0; stack < 2; stack++) {
           tireCoords.push({
             pos: new THREE.Vector3(basePos.x, curr.point.y + 0.34 + stack * 0.54, basePos.z),
@@ -679,7 +830,7 @@ export class StadiumTrack {
   }
 
   private buildTracksideRocksAndCliffs(): void {
-    // Procedural sculpted 3D Boulders & Rock Outcrops lining track shoulders & scenic vista
+    // Procedural sculpted 3D Boulders & Rock Outcrops strictly validated against track & props
     const rockGeo = new THREE.DodecahedronGeometry(1, 1);
     const posAttr = rockGeo.getAttribute('position') as THREE.BufferAttribute;
     for (let i = 0; i < posAttr.count; i++) {
@@ -705,41 +856,198 @@ export class StadiumTrack {
         ? [new THREE.Color('#475569'), new THREE.Color('#334155'), new THREE.Color('#64748b')]
         : [new THREE.Color('#78716c'), new THREE.Color('#57534e'), new THREE.Color('#a8a29e')];
 
-    const rockCount = 110;
-    const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
-    rockInst.castShadow = true;
-    rockInst.receiveShadow = true;
-
-    for (let i = 0; i < rockCount; i++) {
+    const validRocks: { x: number; y: number; z: number; sx: number; sy: number; sz: number; seed: number }[] = [];
+    for (let i = 0; i < 240 && validRocks.length < 90; i++) {
       const idx = Math.floor(((i * 0.6180339887) % 1) * SAMPLE_COUNT);
       const s = this.samples[idx];
       const side = i % 2 === 0 ? 1 : -1;
-      const offsetDist = BARRIER_HALF_WIDTH + 3.5 + (i % 5) * 3.2;
+      const offsetDist = BARRIER_HALF_WIDTH + 9.5 + (i % 6) * 4.5;
       const px = s.point.x + s.right.x * side * offsetDist + ((i % 3) - 1) * 1.4;
       const pz = s.point.z + s.right.z * side * offsetDist + (((i + 1) % 3) - 1) * 1.4;
-      const sx = 1.6 + (i % 4) * 1.15;
-      const sy = 1.1 + (i % 3) * 0.95;
-      const sz = 1.5 + ((i + 2) % 4) * 1.05;
+      // Keep rocks strictly outside the loop perimeter so NO rocks ever sit between track sections!
+      if (!this.isOutwardFromLoop(px, pz, s)) continue;
 
-      this._tmpPos.set(px, Math.max(0, s.point.y * 0.5) + sy * 0.35, pz);
-      this._tmpQuat.setFromEuler(new THREE.Euler((i % 5) * 0.3, i * 1.1, (i % 3) * 0.25));
-      this._tmpScale.set(sx, sy, sz);
-      this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-      rockInst.setMatrixAt(i, this._tmpMat);
-      rockInst.setColorAt(i, rockPalette[i % rockPalette.length]);
+      const sx = 1.6 + (i % 4) * 1.05;
+      const sy = 1.1 + (i % 3) * 0.9;
+      const sz = 1.5 + ((i + 2) % 4) * 1.0;
+      const rBound = Math.max(sx, sz) * 1.2;
+
+      if (!this.reserveProp(px, pz, rBound, 7.5)) continue;
+      validRocks.push({
+        x: px,
+        y: Math.max(0, s.point.y * 0.45) + sy * 0.35,
+        z: pz,
+        sx,
+        sy,
+        sz,
+        seed: i,
+      });
     }
-    rockInst.instanceMatrix.needsUpdate = true;
-    if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
-    rockInst.computeBoundingSphere();
-    this.group.add(rockInst);
+
+    if (validRocks.length > 0) {
+      const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, validRocks.length);
+      rockInst.castShadow = true;
+      rockInst.receiveShadow = true;
+      validRocks.forEach((rk, k) => {
+        this._tmpPos.set(rk.x, rk.y, rk.z);
+        this._tmpQuat.setFromEuler(new THREE.Euler((rk.seed % 5) * 0.3, rk.seed * 1.1, (rk.seed % 3) * 0.25));
+        this._tmpScale.set(rk.sx, rk.sy, rk.sz);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        rockInst.setMatrixAt(k, this._tmpMat);
+        rockInst.setColorAt(k, rockPalette[k % rockPalette.length]);
+      });
+      rockInst.instanceMatrix.needsUpdate = true;
+      if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
+      rockInst.computeBoundingSphere();
+      this.group.add(rockInst);
+    }
     this.disposables.push(rockGeo, rockMat);
   }
 
+  private buildStartLineShritizMonument(): void {
+    // Sculpted Rock Landmark right beside the start straight on EVERY map featuring "SHRITIZ"
+    const s = this.samples[18];
+    let placedX = s.point.x;
+    let placedZ = s.point.z;
+    let placedSide = 1;
+    let found = false;
+
+    const candidates: [number, number][] = [
+      [1, BARRIER_HALF_WIDTH + 11.5],
+      [-1, BARRIER_HALF_WIDTH + 11.5],
+      [1, BARRIER_HALF_WIDTH + 15.0],
+      [-1, BARRIER_HALF_WIDTH + 15.0],
+    ];
+    for (const [side, dist] of candidates) {
+      const cx = s.point.x + s.right.x * side * dist;
+      const cz = s.point.z + s.right.z * side * dist;
+      if (!this.isOutwardFromLoop(cx, cz, s)) continue;
+      if (this.reserveProp(cx, cz, 7.2, 5.2)) {
+        placedX = cx;
+        placedZ = cz;
+        placedSide = side;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      for (const [side, dist] of candidates) {
+        const cx = s.point.x + s.right.x * side * dist;
+        const cz = s.point.z + s.right.z * side * dist;
+        if (this.reserveProp(cx, cz, 7.2, 4.5)) {
+          placedX = cx;
+          placedZ = cz;
+          placedSide = side;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) {
+      placedX = s.point.x + s.right.x * (BARRIER_HALF_WIDTH + 13);
+      placedZ = s.point.z + s.right.z * (BARRIER_HALF_WIDTH + 13);
+      this.placedProps.push({ x: placedX, z: placedZ, r: 7.2 });
+    }
+
+    const monument = new THREE.Group();
+    monument.position.set(placedX, Math.max(0, s.point.y), placedZ);
+    // Angle rock face toward drivers approaching down the start straight
+    const trackYaw = Math.atan2(s.tangent.x, s.tangent.z);
+    monument.rotation.y = trackYaw + Math.PI + (placedSide > 0 ? -0.45 : 0.45);
+
+    const rockColor =
+      this.mapDef.theme === 'plaza'
+        ? '#d97706'
+        : this.mapDef.theme === 'stadium'
+        ? '#475569'
+        : this.mapDef.theme === 'skyline'
+        ? '#64748b'
+        : '#78716c';
+    const rockMat = new THREE.MeshStandardMaterial({
+      color: rockColor,
+      roughness: 0.85,
+      metalness: 0.06,
+      flatShading: true,
+    });
+    const peakMat = new THREE.MeshStandardMaterial({
+      color: this.mapDef.theme === 'plaza' ? '#f59e0b' : '#94a3b8',
+      roughness: 0.78,
+      flatShading: true,
+    });
+    const signMat = new THREE.MeshStandardMaterial({
+      map: this.textures.shritizArchSignMap,
+      roughness: 0.38,
+      emissive: '#facc15',
+      emissiveIntensity: 0.14,
+    });
+    const frameMat = new THREE.MeshStandardMaterial({ color: '#451a03', roughness: 0.72 });
+
+    const boulderGeo = new THREE.DodecahedronGeometry(4.6, 1);
+    const mainRock = new THREE.Mesh(boulderGeo, rockMat);
+    mainRock.scale.set(1.35, 1.45, 0.95);
+    mainRock.position.y = 4.2;
+    mainRock.castShadow = true;
+    mainRock.receiveShadow = true;
+    monument.add(mainRock);
+
+    const sideGeo = new THREE.DodecahedronGeometry(2.8, 1);
+    const leftBoulder = new THREE.Mesh(sideGeo, peakMat);
+    leftBoulder.position.set(-4.6, 2.2, 0.6);
+    leftBoulder.scale.set(1.1, 0.9, 1.0);
+    leftBoulder.castShadow = true;
+    monument.add(leftBoulder);
+
+    const rightBoulder = new THREE.Mesh(sideGeo, peakMat);
+    rightBoulder.position.set(4.6, 2.5, -0.4);
+    rightBoulder.scale.set(1.0, 1.05, 0.95);
+    rightBoulder.castShadow = true;
+    monument.add(rightBoulder);
+
+    // Dual-sided bold SHRITIZ plaque mounted into the rock face
+    const frameGeo = new THREE.BoxGeometry(10.8, 3.1, 1.4);
+    const frame = new THREE.Mesh(frameGeo, frameMat);
+    frame.position.set(0, 6.2, 2.8);
+    frame.castShadow = true;
+    monument.add(frame);
+
+    const faceGeo = new THREE.PlaneGeometry(10.1, 2.55);
+    const frontFace = new THREE.Mesh(faceGeo, signMat);
+    frontFace.position.set(0, 6.2, 3.53);
+    monument.add(frontFace);
+
+    const backFace = new THREE.Mesh(faceGeo, signMat);
+    backFace.position.set(0, 6.2, 2.07);
+    backFace.rotation.y = Math.PI;
+    monument.add(backFace);
+
+    this.group.add(monument);
+    this.disposables.push(rockMat, peakMat, signMat, frameMat, boulderGeo, sideGeo, frameGeo, faceGeo);
+  }
+
   private buildPlazaFountainAndParasols(): void {
-    // Scenic Coconut Plaza Water Fountain in infield + Colorful Resort Parasols
-    const basinGeo = new THREE.CylinderGeometry(16, 17.5, 2.2, 24);
+    // Scenic Coconut Plaza Water Fountain safely placed in wide open infield
+    const candidateCenters: [number, number][] = [
+      [104, -22],
+      [96, 20],
+      [112, -55],
+      [88, -105],
+      [92, 65],
+    ];
+    let fx = 104;
+    let fz = -22;
+    let fountainOk = false;
+    for (const [cx, cz] of candidateCenters) {
+      if (this.reserveProp(cx, cz, 20, 6)) {
+        fx = cx;
+        fz = cz;
+        fountainOk = true;
+        break;
+      }
+    }
+
+    const basinGeo = new THREE.CylinderGeometry(15, 16.5, 2.2, 24);
     const basinMat = new THREE.MeshStandardMaterial({ color: '#fde68a', roughness: 0.55 });
-    const waterGeo = new THREE.CylinderGeometry(14.5, 14.5, 1.8, 24);
+    const waterGeo = new THREE.CylinderGeometry(13.5, 13.5, 1.8, 24);
     const waterMat = new THREE.MeshStandardMaterial({
       color: '#0ea5e9',
       emissive: '#0284c7',
@@ -747,35 +1055,39 @@ export class StadiumTrack {
       roughness: 0.12,
       metalness: 0.3,
     });
-    const fountain = new THREE.Group();
-    fountain.position.set(42, 0.5, -24);
-    fountain.add(new THREE.Mesh(basinGeo, basinMat));
-    const water = new THREE.Mesh(waterGeo, waterMat);
-    water.position.y = 0.35;
-    fountain.add(water);
-
-    const jetGeo = new THREE.TorusGeometry(6.5, 0.45, 8, 24);
+    const jetGeo = new THREE.TorusGeometry(6.2, 0.45, 8, 24);
     jetGeo.rotateX(Math.PI / 2);
     const jetMat = new THREE.MeshBasicMaterial({ color: '#bae6fd', transparent: true, opacity: 0.8 });
-    for (let r = 0; r < 2; r++) {
-      const ring = new THREE.Mesh(jetGeo, jetMat);
-      ring.position.y = 2.6 + r * 2.4;
-      ring.scale.setScalar(1 - r * 0.38);
-      fountain.add(ring);
-      this.fountainRings.push(ring);
-    }
-    this.group.add(fountain);
 
-    // Colorful Resort Parasols along the promenade
+    if (fountainOk) {
+      const fountain = new THREE.Group();
+      fountain.position.set(fx, 0.5, fz);
+      fountain.add(new THREE.Mesh(basinGeo, basinMat));
+      const water = new THREE.Mesh(waterGeo, waterMat);
+      water.position.y = 0.35;
+      fountain.add(water);
+      for (let r = 0; r < 2; r++) {
+        const ring = new THREE.Mesh(jetGeo, jetMat);
+        ring.position.y = 2.6 + r * 2.4;
+        ring.scale.setScalar(1 - r * 0.38);
+        fountain.add(ring);
+        this.fountainRings.push(ring);
+      }
+      this.group.add(fountain);
+    }
+
+    // Colorful Resort Parasols strictly outward from track loop
     const poleGeo = new THREE.CylinderGeometry(0.14, 0.14, 4.2, 6);
     const poleMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.4 });
     const canopyGeo = new THREE.ConeGeometry(3.1, 1.4, 8);
     const parasolColors = ['#ef4444', '#38bdf8', '#facc15', '#ec4899'];
-    for (let i = 0; i < 16; i++) {
-      const idx = Math.floor(((i + 0.35) / 16) * SAMPLE_COUNT) % SAMPLE_COUNT;
+    for (let i = 0; i < 24; i++) {
+      const idx = Math.floor(((i + 0.35) / 24) * SAMPLE_COUNT) % SAMPLE_COUNT;
       const s = this.samples[idx];
       const side = i % 2 === 0 ? 1 : -1;
-      const pPos = s.point.clone().addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 6.5));
+      const pPos = s.point.clone().addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 8.5));
+      if (!this.isOutwardFromLoop(pPos.x, pPos.z, s)) continue;
+      if (!this.reserveProp(pPos.x, pPos.z, 3.8, 5.5)) continue;
       const umb = new THREE.Group();
       umb.position.set(pPos.x, s.point.y, pPos.z);
       const pole = new THREE.Mesh(poleGeo, poleMat);
@@ -851,12 +1163,12 @@ export class StadiumTrack {
       roughness: 0.8,
     });
 
-    // Stepped sculpted stone base pillars on left & right of track
-    const stepGeo = new THREE.BoxGeometry(5.6, 2.8, 5.6);
-    [-16.8, 16.8].forEach((x) => {
+    // Stepped sculpted stone base pillars positioned completely outside track barriers (±21.4)
+    const stepGeo = new THREE.BoxGeometry(5.2, 2.8, 5.2);
+    [-21.4, 21.4].forEach((x) => {
       for (let st = 0; st < 3; st++) {
         const blk = new THREE.Mesh(stepGeo, baseStoneMat);
-        blk.position.set(x + (st % 2 === 0 ? 0.3 : -0.3), 1.4 + st * 2.5, 0);
+        blk.position.set(x + (st % 2 === 0 ? 0.25 : -0.25), 1.4 + st * 2.5, 0);
         blk.scale.set(1 - st * 0.1, 1, 1 - st * 0.08);
         blk.castShadow = true;
         blk.receiveShadow = true;
@@ -864,27 +1176,27 @@ export class StadiumTrack {
       }
     });
 
-    // Curved massive sandstone arch spanning above the track
-    const archGeo = new THREE.TorusGeometry(16.6, 2.45, 10, 28, Math.PI);
+    // Wide curved sandstone arch spanning above track & barriers with zero wall overlap
+    const archGeo = new THREE.TorusGeometry(21.4, 2.35, 10, 28, Math.PI);
     const archMesh = new THREE.Mesh(archGeo, archSandMat);
     archMesh.position.y = 7.4;
     archMesh.castShadow = true;
     archGroup.add(archMesh);
 
     // Carved Wooden Plaque Sign reading "SHRITIZ" mounted across the crown!
-    const plaqueGeo = new THREE.BoxGeometry(20.5, 4.6, 1.15);
+    const plaqueGeo = new THREE.BoxGeometry(24.6, 4.8, 1.15);
     const plaqueFrame = new THREE.Mesh(plaqueGeo, woodTrimMat);
-    plaqueFrame.position.set(0, 19.6, 0);
+    plaqueFrame.position.set(0, 24.0, 0);
     plaqueFrame.castShadow = true;
     archGroup.add(plaqueFrame);
 
-    const faceGeo = new THREE.PlaneGeometry(19.6, 4.1);
+    const faceGeo = new THREE.PlaneGeometry(23.6, 4.25);
     const frontSign = new THREE.Mesh(faceGeo, signBoardMat);
-    frontSign.position.set(0, 19.6, 0.6);
+    frontSign.position.set(0, 24.0, 0.6);
     archGroup.add(frontSign);
 
     const backSign = new THREE.Mesh(faceGeo, signBoardMat);
-    backSign.position.set(0, 19.6, -0.6);
+    backSign.position.set(0, 24.0, -0.6);
     backSign.rotation.y = Math.PI;
     archGroup.add(backSign);
 
@@ -915,7 +1227,7 @@ export class StadiumTrack {
   }
 
   private buildCoconutPlazaEnvironment(): void {
-    // Nintendo Coconut Mall / Resort Plaza Storefronts, Swaying Palms, Flower Planters & Shuttle Carts!
+    // Nintendo Coconut Mall / Resort Plaza Storefronts, Swaying Palms, Tropical Shrubs & Shuttle Carts (strictly validated clear of tracks)
     const facadeMat = new THREE.MeshStandardMaterial({
       map: this.textures.plazaWallMap,
       roughness: 0.55,
@@ -925,15 +1237,17 @@ export class StadiumTrack {
       color: '#facc15',
       roughness: 0.45,
     });
-    const buildingGeo = new THREE.BoxGeometry(28, 18, 22);
-    const roofGeo = new THREE.BoxGeometry(30, 2.2, 24);
+    const buildingGeo = new THREE.BoxGeometry(26, 18, 20);
+    const roofGeo = new THREE.BoxGeometry(28, 2.2, 22);
 
-    // Place sunlit mall buildings along straightaways & sweeping corners outside dividers
-    for (let i = 0; i < 18; i++) {
-      const idx = Math.floor(((i + 0.5) / 18) * SAMPLE_COUNT) % SAMPLE_COUNT;
+    // Place sunlit mall buildings strictly on OUTER perimeter (never between tracks!)
+    for (let i = 0; i < 36; i++) {
+      const idx = Math.floor(((i + 0.5) / 36) * SAMPLE_COUNT) % SAMPLE_COUNT;
       const s = this.samples[idx];
       const side = i % 2 === 0 ? 1 : -1;
-      const pos = s.point.clone().addScaledVector(s.right, side * 34);
+      const pos = s.point.clone().addScaledVector(s.right, side * 46);
+      if (!this.isOutwardFromLoop(pos.x, pos.z, s)) continue;
+      if (!this.reserveProp(pos.x, pos.z, 20.5, 12.0)) continue;
 
       const bldg = new THREE.Group();
       bldg.position.set(pos.x, Math.max(0, s.point.y), pos.z);
@@ -951,20 +1265,18 @@ export class StadiumTrack {
       this.group.add(bldg);
     }
 
-    // Swaying Resort Palm Trees along the promenade
+    // Swaying Resort Palm Trees (both outer scenic groves and trackside promenade)
     const trunkGeo = new THREE.CylinderGeometry(0.45, 0.75, 11, 8);
     const trunkMat = new THREE.MeshStandardMaterial({ color: '#92400e', roughness: 0.85 });
     const leafGeo = new THREE.ConeGeometry(1.1, 6.2, 5);
     const leafMat = new THREE.MeshStandardMaterial({ color: '#22c55e', roughness: 0.55 });
+    const coconutGeo = new THREE.SphereGeometry(0.42, 8, 6);
+    const coconutMat = new THREE.MeshStandardMaterial({ color: '#713f12', roughness: 0.8 });
 
-    for (let i = 0; i < 28; i++) {
-      const idx = Math.floor((i / 28) * SAMPLE_COUNT) % SAMPLE_COUNT;
-      const s = this.samples[idx];
-      const side = i % 2 === 0 ? -1 : 1;
-      const pPos = s.point.clone().addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 3.2));
-
+    const spawnPalm = (x: number, y: number, z: number, scale = 1) => {
       const palm = new THREE.Group();
-      palm.position.set(pPos.x, s.point.y, pPos.z);
+      palm.position.set(x, y, z);
+      palm.scale.setScalar(scale);
 
       const trunk = new THREE.Mesh(trunkGeo, trunkMat);
       trunk.position.y = 5.5;
@@ -981,22 +1293,80 @@ export class StadiumTrack {
         leaf.position.set(Math.cos(ang) * 2.2, -0.4, Math.sin(ang) * 2.2);
         crown.add(leaf);
       }
+      for (let c = 0; c < 3; c++) {
+        const ca = (c / 3) * Math.PI * 2;
+        const coco = new THREE.Mesh(coconutGeo, coconutMat);
+        coco.position.set(Math.cos(ca) * 0.65, -0.6, Math.sin(ca) * 0.65);
+        crown.add(coco);
+      }
       palm.add(crown);
       this.palmCrowns.push(crown);
       this.group.add(palm);
+    };
+
+    for (let i = 0; i < 56; i++) {
+      const idx = Math.floor((i / 56) * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const s = this.samples[idx];
+      const side = i % 2 === 0 ? -1 : 1;
+      const dist = BARRIER_HALF_WIDTH + 8.5 + (i % 3) * 4.5;
+      const pPos = s.point.clone().addScaledVector(s.right, side * dist);
+      if (!this.isOutwardFromLoop(pPos.x, pPos.z, s)) continue;
+      if (!this.reserveProp(pPos.x, pPos.z, 4.0, 5.0)) continue;
+      spawnPalm(pPos.x, Math.max(0, s.point.y * 0.6), pPos.z, 0.9 + (i % 3) * 0.15);
     }
 
-    // Bright Yellow & Blue Resort Shuttle Carts parked beside the plaza
+    // Scenic outer perimeter palm clusters (keeping tracks & narrow medians completely clear)
+    for (let g = 0; g < 26; g++) {
+      const ang = (g / 26) * Math.PI * 2;
+      const r = 250 + (g % 3) * 28;
+      const gx = this.loopCx + Math.cos(ang) * r;
+      const gz = this.loopCz + Math.sin(ang) * r;
+      if (!this.reserveProp(gx, gz, 4.4, 8.0)) continue;
+      spawnPalm(gx, 0, gz, 1.0 + (g % 3) * 0.22);
+    }
+
+    // Tropical flowering bushes strictly along outer edges
+    const bushGeo = new THREE.DodecahedronGeometry(2.1, 1);
+    const bushMat = new THREE.MeshStandardMaterial({ color: '#16a34a', roughness: 0.75 });
+    const bushCoords: { x: number; y: number; z: number; s: number }[] = [];
+    for (let i = 0; i < 64; i++) {
+      const idx = Math.floor(((i + 0.25) / 64) * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const s = this.samples[idx];
+      const side = i % 2 === 0 ? 1 : -1;
+      const bPos = s.point.clone().addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 6.5 + (i % 4) * 2.5));
+      if (!this.isOutwardFromLoop(bPos.x, bPos.z, s)) continue;
+      const sc = 0.8 + (i % 3) * 0.35;
+      if (!this.reserveProp(bPos.x, bPos.z, 2.6 * sc, 5.0)) continue;
+      bushCoords.push({ x: bPos.x, y: Math.max(0, s.point.y * 0.6) + 1.1 * sc, z: bPos.z, s: sc });
+    }
+    if (bushCoords.length > 0) {
+      const bushInst = new THREE.InstancedMesh(bushGeo, bushMat, bushCoords.length);
+      bushCoords.forEach((b, k) => {
+        this._tmpPos.set(b.x, b.y, b.z);
+        this._tmpQuat.identity();
+        this._tmpScale.set(b.s * 1.2, b.s * 0.85, b.s * 1.2);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        bushInst.setMatrixAt(k, this._tmpMat);
+      });
+      bushInst.instanceMatrix.needsUpdate = true;
+      bushInst.computeBoundingSphere();
+      this.group.add(bushInst);
+    }
+
+    // Bright Yellow & Blue Resort Shuttle Carts parked safely outside outer plaza perimeter
     const busBodyGeo = new THREE.BoxGeometry(3.4, 2.6, 6.4);
     const busMat = new THREE.MeshStandardMaterial({ color: '#facc15', roughness: 0.35, metalness: 0.18 });
     const winGeo = new THREE.BoxGeometry(3.5, 1.0, 4.8);
     const winMat = new THREE.MeshStandardMaterial({ color: '#0ea5e9', roughness: 0.15, metalness: 0.5 });
 
-    for (let i = 0; i < 6; i++) {
-      const idx = Math.floor((0.08 + i * 0.15) * SAMPLE_COUNT) % SAMPLE_COUNT;
+    for (let i = 0; i < 12; i++) {
+      const idx = Math.floor((0.06 + i * 0.08) * SAMPLE_COUNT) % SAMPLE_COUNT;
       const s = this.samples[idx];
+      const side = i % 2 === 0 ? 1 : -1;
+      const pos = s.point.clone().addScaledVector(s.right, side * 25.5);
+      if (!this.isOutwardFromLoop(pos.x, pos.z, s)) continue;
+      if (!this.reserveProp(pos.x, pos.z, 4.8, 5.0)) continue;
       const bus = new THREE.Group();
-      const pos = s.point.clone().addScaledVector(s.right, (i % 2 === 0 ? 1 : -1) * 22.5);
       bus.position.set(pos.x, s.point.y + 1.3, pos.z);
       bus.rotation.y = Math.atan2(s.tangent.x, s.tangent.z);
       bus.add(new THREE.Mesh(busBodyGeo, busMat));
@@ -1015,6 +1385,10 @@ export class StadiumTrack {
       trunkMat,
       leafGeo,
       leafMat,
+      coconutGeo,
+      coconutMat,
+      bushGeo,
+      bushMat,
       busBodyGeo,
       busMat,
       winGeo,
@@ -1033,10 +1407,12 @@ export class StadiumTrack {
       const s = this.samples[i];
       if (s.point.y > 1.8) {
         [-10.5, 10.5].forEach((lat) => {
+          const px = s.point.x + s.right.x * lat;
+          const pz = s.point.z + s.right.z * lat;
+          if (this.minDistanceToOtherTrackSegment(px, pz, i, 24) < BARRIER_HALF_WIDTH + 4.5) return;
           const p = new THREE.Mesh(pillarGeo, pillarMat);
-          p.position.copy(s.point).addScaledVector(s.right, lat);
+          p.position.set(px, (s.point.y - 0.5) / 2, pz);
           p.scale.y = s.point.y + 0.6;
-          p.position.y = (s.point.y - 0.5) / 2;
           p.castShadow = true;
           p.receiveShadow = true;
           this.group.add(p);
@@ -1044,7 +1420,7 @@ export class StadiumTrack {
       }
     }
 
-    // Bright Orange/Gold Suspension Ramp Markers on Jump Crests
+    // Bright Orange/Gold Suspension Ramp Markers on Jump Crests (pylons placed outside barriers!)
     const rampDeckGeo = new THREE.PlaneGeometry(TRACK_HALF_WIDTH * 1.9, 13);
     rampDeckGeo.rotateX(-Math.PI / 2);
     const rampDeckMat = new THREE.MeshStandardMaterial({
@@ -1071,7 +1447,7 @@ export class StadiumTrack {
       deck.rotation.y = yaw;
       this.group.add(deck);
 
-      [-TRACK_HALF_WIDTH - 1, TRACK_HALF_WIDTH + 1].forEach((lat) => {
+      [-(BARRIER_HALF_WIDTH + 1.9), BARRIER_HALF_WIDTH + 1.9].forEach((lat) => {
         const pylon = new THREE.Mesh(pylonGeo, pylonMat);
         pylon.position.copy(s.point).addScaledVector(s.right, lat);
         pylon.position.y += 5.2;
@@ -1104,39 +1480,39 @@ export class StadiumTrack {
     gantry.add(lineMesh);
 
     const pillarMat = new THREE.MeshStandardMaterial({ color: '#1e293b', metalness: 0.8, roughness: 0.25 });
-    const pillarGeo = new THREE.BoxGeometry(1.4, 11.5, 1.4);
-    [-14.5, 14.5].forEach((x) => {
+    const pillarGeo = new THREE.BoxGeometry(1.4, 11.8, 1.4);
+    [-18.2, 18.2].forEach((x) => {
       const p = new THREE.Mesh(pillarGeo, pillarMat);
-      p.position.set(x, 5.75, 0);
+      p.position.set(x, 5.9, 0);
       p.castShadow = true;
       gantry.add(p);
     });
 
-    const beamGeo = new THREE.BoxGeometry(30.6, 2.2, 2.0);
+    const beamGeo = new THREE.BoxGeometry(38.0, 2.2, 2.0);
     const beamMat = new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.6, roughness: 0.35 });
     const beam = new THREE.Mesh(beamGeo, beamMat);
-    beam.position.set(0, 11.2, 0);
+    beam.position.set(0, 11.4, 0);
     gantry.add(beam);
 
-    const bannerGeo = new THREE.PlaneGeometry(26, 1.8);
+    const bannerGeo = new THREE.PlaneGeometry(32, 1.8);
     const bannerMat = new THREE.MeshBasicMaterial({ map: this.textures.checkerMap, side: THREE.DoubleSide });
     const bannerF = new THREE.Mesh(bannerGeo, bannerMat);
-    bannerF.position.set(0, 11.2, 1.05);
+    bannerF.position.set(0, 11.4, 1.05);
     gantry.add(bannerF);
     const bannerB = new THREE.Mesh(bannerGeo, bannerMat);
-    bannerB.position.set(0, 11.2, -1.05);
+    bannerB.position.set(0, 11.4, -1.05);
     gantry.add(bannerB);
 
     const podGeo = new THREE.BoxGeometry(5.8, 1.8, 1.4);
     const pod = new THREE.Mesh(podGeo, pillarMat);
-    pod.position.set(0, 9.2, 0);
+    pod.position.set(0, 9.4, 0);
     gantry.add(pod);
 
     const lightGeo = new THREE.SphereGeometry(0.5, 16, 16);
     for (let i = 0; i < 3; i++) {
       const lm = new THREE.MeshBasicMaterial({ color: '#334155' });
       const bulb = new THREE.Mesh(lightGeo, lm);
-      bulb.position.set(-1.6 + i * 1.6, 9.2, 0.72);
+      bulb.position.set(-1.6 + i * 1.6, 9.4, 0.72);
       gantry.add(bulb);
       this.startLightMeshes.push(bulb);
       this.disposables.push(lm);
@@ -1150,7 +1526,7 @@ export class StadiumTrack {
     });
     for (let i = -3; i <= 3; i++) {
       const f = new THREE.Mesh(flagGeo, flagMat);
-      f.position.set(i * 4.2, 13.1, 0);
+      f.position.set(i * 4.8, 13.3, 0);
       gantry.add(f);
       this.bannerFlags.push(f);
     }
@@ -1272,97 +1648,284 @@ export class StadiumTrack {
   }
 
   private buildSunlitCountrysideProps(): void {
-    const trunkGeo = new THREE.CylinderGeometry(0.9, 1.3, 9, 8);
+    // Rich Countryside Oak & Pine Groves (roadside + infield + outer hills) all verified non-overlapping
+    const trunkGeo = new THREE.CylinderGeometry(0.85, 1.25, 9, 8);
     const trunkMat = new THREE.MeshStandardMaterial({ color: '#78350f', roughness: 0.9 });
-    const leafGeo = new THREE.DodecahedronGeometry(4.6, 1);
-    const treeCount = 85;
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
-    const leaves = new THREE.InstancedMesh(
-      leafGeo,
-      new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.78 }),
-      treeCount
-    );
-    const leafPalette = [
+    const leafGeo = new THREE.DodecahedronGeometry(4.5, 1);
+    const leafMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.78 });
+    const pineGeo = new THREE.ConeGeometry(4.2, 11.5, 7);
+    const pineMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.78 });
+
+    const oakPalette = [
       new THREE.Color('#4ade80'),
       new THREE.Color('#22c55e'),
       new THREE.Color('#facc15'),
       new THREE.Color('#f59e0b'),
     ];
+    const pinePalette = [new THREE.Color('#15803d'), new THREE.Color('#166534'), new THREE.Color('#16a34a')];
 
-    for (let i = 0; i < treeCount; i++) {
-      const ang = (i / treeCount) * Math.PI * 2 + (i % 3) * 0.14;
-      const dist = 215 + (i % 5) * 28;
-      const x = Math.cos(ang) * dist;
-      const z = Math.sin(ang) * dist;
-      const s = 0.85 + (i % 4) * 0.2;
+    const oaks: { x: number; z: number; s: number; colIdx: number }[] = [];
+    const pines: { x: number; z: number; s: number; colIdx: number }[] = [];
 
-      this._tmpPos.set(x, 4.2 * s, z);
-      this._tmpQuat.identity();
-      this._tmpScale.set(s, s, s);
-      this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-      trunks.setMatrixAt(i, this._tmpMat);
-
-      this._tmpPos.set(x, 10.5 * s, z);
-      this._tmpScale.set(s * 1.15, s, s * 1.15);
-      this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-      leaves.setMatrixAt(i, this._tmpMat);
-      leaves.setColorAt(i, leafPalette[i % leafPalette.length]);
+    // 1) Trackside scenic tree belts strictly outward from loop perimeter
+    for (let i = 0; i < 84; i++) {
+      const idx = Math.floor((i / 84) * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const s = this.samples[idx];
+      const side = i % 2 === 0 ? 1 : -1;
+      const dist = BARRIER_HALF_WIDTH + 10.5 + (i % 4) * 7.5;
+      const x = s.point.x + s.right.x * side * dist;
+      const z = s.point.z + s.right.z * side * dist;
+      if (!this.isOutwardFromLoop(x, z, s)) continue;
+      const sc = 0.85 + (i % 4) * 0.18;
+      if (!this.reserveProp(x, z, 5.2 * sc, 6.0)) continue;
+      if (i % 3 === 0) pines.push({ x, z, s: sc, colIdx: i % pinePalette.length });
+      else oaks.push({ x, z, s: sc, colIdx: i % oakPalette.length });
     }
-    trunks.instanceMatrix.needsUpdate = true;
-    leaves.instanceMatrix.needsUpdate = true;
-    if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
-    trunks.computeBoundingSphere();
-    leaves.computeBoundingSphere();
-    this.group.add(trunks, leaves);
 
-    const tankGeo = new THREE.CylinderGeometry(11, 11, 20, 18);
+    // 2) Wide outer countryside forest hills (never placed inside tight track medians)
+    for (let i = 0; i < 120; i++) {
+      const ang = (i * 2.399963) % (Math.PI * 2);
+      const ring = 225 + (i % 6) * 28;
+      const x = this.loopCx + Math.cos(ang) * ring;
+      const z = this.loopCz + Math.sin(ang) * ring;
+      const sc = 0.9 + (i % 4) * 0.22;
+      if (!this.reserveProp(x, z, 5.4 * sc, 8.0)) continue;
+      if (i % 2 === 0) pines.push({ x, z, s: sc, colIdx: i % pinePalette.length });
+      else oaks.push({ x, z, s: sc, colIdx: i % oakPalette.length });
+    }
+
+    if (oaks.length > 0) {
+      const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, oaks.length);
+      const leaves = new THREE.InstancedMesh(leafGeo, leafMat, oaks.length);
+      oaks.forEach((t, i) => {
+        this._tmpPos.set(t.x, 4.2 * t.s, t.z);
+        this._tmpQuat.identity();
+        this._tmpScale.set(t.s, t.s, t.s);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        trunks.setMatrixAt(i, this._tmpMat);
+
+        this._tmpPos.set(t.x, 10.2 * t.s, t.z);
+        this._tmpScale.set(t.s * 1.15, t.s, t.s * 1.15);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        leaves.setMatrixAt(i, this._tmpMat);
+        leaves.setColorAt(i, oakPalette[t.colIdx]);
+      });
+      trunks.instanceMatrix.needsUpdate = true;
+      leaves.instanceMatrix.needsUpdate = true;
+      if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
+      trunks.computeBoundingSphere();
+      leaves.computeBoundingSphere();
+      this.group.add(trunks, leaves);
+    }
+
+    if (pines.length > 0) {
+      const pTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, pines.length);
+      const pCones = new THREE.InstancedMesh(pineGeo, pineMat, pines.length);
+      pines.forEach((t, i) => {
+        this._tmpPos.set(t.x, 3.8 * t.s, t.z);
+        this._tmpQuat.identity();
+        this._tmpScale.set(t.s * 0.85, t.s * 0.9, t.s * 0.85);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        pTrunks.setMatrixAt(i, this._tmpMat);
+
+        this._tmpPos.set(t.x, 11.2 * t.s, t.z);
+        this._tmpScale.set(t.s, t.s, t.s);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        pCones.setMatrixAt(i, this._tmpMat);
+        pCones.setColorAt(i, pinePalette[t.colIdx]);
+      });
+      pTrunks.instanceMatrix.needsUpdate = true;
+      pCones.instanceMatrix.needsUpdate = true;
+      if (pCones.instanceColor) pCones.instanceColor.needsUpdate = true;
+      pTrunks.computeBoundingSphere();
+      pCones.computeBoundingSphere();
+      this.group.add(pTrunks, pCones);
+    }
+
+    const tankGeo = new THREE.CylinderGeometry(10, 10, 18, 18);
     const tankMat = new THREE.MeshStandardMaterial({ color: '#9a3412', roughness: 0.7, metalness: 0.35 });
-    const pipeGeo = new THREE.CylinderGeometry(2.2, 2.2, 22, 12);
+    const pipeGeo = new THREE.CylinderGeometry(2.0, 2.0, 20, 12);
     const pipeMat = new THREE.MeshStandardMaterial({ color: '#64748b', roughness: 0.5, metalness: 0.6 });
-    [new THREE.Vector3(-90, 12, 95), new THREE.Vector3(75, 10, -85)].forEach((pos) => {
+    [
+      new THREE.Vector3(105, 9, -20),
+      new THREE.Vector3(-105, 9, 95),
+    ].forEach((pos) => {
+      if (!this.reserveProp(pos.x, pos.z, 16, 6)) return;
       const tGroup = new THREE.Group();
       tGroup.position.copy(pos);
       tGroup.add(new THREE.Mesh(tankGeo, tankMat));
       const pipe = new THREE.Mesh(pipeGeo, pipeMat);
       pipe.rotation.z = Math.PI / 2;
-      pipe.position.set(12, 3, 0);
+      pipe.position.set(11, 3, 0);
       tGroup.add(pipe);
       this.group.add(tGroup);
     });
 
-    this.disposables.push(
-      trunkGeo,
-      trunkMat,
-      leafGeo,
-      leaves.material as THREE.Material,
-      tankGeo,
-      tankMat,
-      pipeGeo,
-      pipeMat
-    );
+    this.disposables.push(trunkGeo, trunkMat, leafGeo, leafMat, pineGeo, pineMat, tankGeo, tankMat, pipeGeo, pipeMat);
   }
 
   private buildSkylineTowersAndProps(): void {
-    const bGeo = new THREE.BoxGeometry(1, 1, 1);
-    const bMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.35, metalness: 0.72 });
-    const inst = new THREE.InstancedMesh(bGeo, bMat, 36);
-    for (let i = 0; i < 36; i++) {
-      const a = (i / 36) * Math.PI * 2;
-      const r = 240 + (i % 3) * 35;
-      const h = 38 + (i % 5) * 18;
-      this._tmpPos.set(Math.cos(a) * r, h / 2, Math.sin(a) * r);
-      this._tmpQuat.identity();
-      this._tmpScale.set(18, h, 18);
-      this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-      inst.setMatrixAt(i, this._tmpMat);
+    // Illuminated Urban Towers + Park Pines & Oaks verified non-overlapping
+    const winCanvas = document.createElement('canvas');
+    winCanvas.width = 128;
+    winCanvas.height = 256;
+    const wCtx = winCanvas.getContext('2d')!;
+    wCtx.fillStyle = '#0f172a';
+    wCtx.fillRect(0, 0, 128, 256);
+    for (let y = 10; y < 248; y += 16) {
+      for (let x = 8; x < 120; x += 16) {
+        const lit = ((x * 3 + y * 5) % 7) > 1;
+        wCtx.fillStyle = lit ? ((x + y) % 3 === 0 ? '#bae6fd' : '#fef08a') : '#1e293b';
+        wCtx.fillRect(x, y, 10, 10);
+      }
     }
-    inst.instanceMatrix.needsUpdate = true;
-    inst.computeBoundingSphere();
-    this.group.add(inst);
-    this.disposables.push(bGeo, bMat);
+    const winTex = new THREE.CanvasTexture(winCanvas);
+    winTex.colorSpace = THREE.SRGBColorSpace;
+    winTex.wrapS = THREE.RepeatWrapping;
+    winTex.wrapT = THREE.RepeatWrapping;
+
+    const bGeo = new THREE.BoxGeometry(1, 1, 1);
+    const bMat = new THREE.MeshStandardMaterial({
+      map: winTex,
+      emissiveMap: winTex,
+      emissive: '#ffffff',
+      emissiveIntensity: 0.48,
+      roughness: 0.35,
+      metalness: 0.65,
+    });
+
+    const towers: { x: number; h: number; z: number; sx: number; sz: number }[] = [];
+    for (let i = 0; i < 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
+      const r = 248 + (i % 4) * 34;
+      const cx = this.loopCx + Math.cos(a) * r;
+      const cz = this.loopCz + Math.sin(a) * r;
+      const sx = 14 + (i % 3) * 4;
+      const sz = 14 + ((i + 1) % 3) * 4;
+      const h = 42 + (i % 5) * 18;
+      if (!this.reserveProp(cx, cz, Math.max(sx, sz) * 0.9, 12.0)) continue;
+      towers.push({ x: cx, h, z: cz, sx, sz });
+    }
+    if (towers.length > 0) {
+      const inst = new THREE.InstancedMesh(bGeo, bMat, towers.length);
+      towers.forEach((tw, i) => {
+        this._tmpPos.set(tw.x, tw.h / 2, tw.z);
+        this._tmpQuat.identity();
+        this._tmpScale.set(tw.sx, tw.h, tw.sz);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        inst.setMatrixAt(i, this._tmpMat);
+      });
+      inst.instanceMatrix.needsUpdate = true;
+      inst.computeBoundingSphere();
+      this.group.add(inst);
+    }
+
+    // Lush city park trees placed along outer perimeter (clear of tracks)
+    const tGeo = new THREE.CylinderGeometry(0.65, 0.95, 7, 7);
+    const tMat = new THREE.MeshStandardMaterial({ color: '#78350f', roughness: 0.9 });
+    const cGeo = new THREE.DodecahedronGeometry(3.6, 1);
+    const cMat = new THREE.MeshStandardMaterial({ color: '#16a34a', roughness: 0.72 });
+    const trees: { x: number; z: number; s: number }[] = [];
+    for (let i = 0; i < 72; i++) {
+      const idx = Math.floor((i / 72) * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const s = this.samples[idx];
+      const side = i % 2 === 0 ? 1 : -1;
+      const dist = BARRIER_HALF_WIDTH + 9.5 + (i % 4) * 6;
+      const x = s.point.x + s.right.x * side * dist;
+      const z = s.point.z + s.right.z * side * dist;
+      if (!this.isOutwardFromLoop(x, z, s)) continue;
+      const sc = 0.85 + (i % 3) * 0.25;
+      if (!this.reserveProp(x, z, 4.4 * sc, 5.5)) continue;
+      trees.push({ x, z, s: sc });
+    }
+    if (trees.length > 0) {
+      const tInst = new THREE.InstancedMesh(tGeo, tMat, trees.length);
+      const cInst = new THREE.InstancedMesh(cGeo, cMat, trees.length);
+      trees.forEach((tr, i) => {
+        this._tmpPos.set(tr.x, 3.5 * tr.s, tr.z);
+        this._tmpQuat.identity();
+        this._tmpScale.set(tr.s, tr.s, tr.s);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        tInst.setMatrixAt(i, this._tmpMat);
+
+        this._tmpPos.set(tr.x, 8.2 * tr.s, tr.z);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        cInst.setMatrixAt(i, this._tmpMat);
+      });
+      tInst.instanceMatrix.needsUpdate = true;
+      cInst.instanceMatrix.needsUpdate = true;
+      this.group.add(tInst, cInst);
+    }
+
+    this.disposables.push(winTex, bGeo, bMat, tGeo, tMat, cGeo, cMat);
   }
 
-  private buildStadiumColiseum(): void {
+  private buildStartStraightBleachers(
+    crowdCoords: { x: number; y: number; z: number; yaw: number; scale: number }[]
+  ): void {
+    // Tiered Grandstand Bleachers along outer start/finish straight on EVERY map populated with cheering Mushroom Toads!
+    const s = this.samples[6];
+    let bleacherSide = 1;
+    const outX = s.point.x + s.right.x * 28;
+    const outZ = s.point.z + s.right.z * 28;
+    if (!this.isOutwardFromLoop(outX, outZ, s)) bleacherSide = -1;
+
+    const bPos = s.point.clone().addScaledVector(s.right, bleacherSide * (BARRIER_HALF_WIDTH + 9.5));
+    if (!this.reserveProp(bPos.x, bPos.z, 13.0, 5.0)) return;
+
+    const trackYaw = Math.atan2(s.tangent.x, s.tangent.z);
+    const faceYaw = trackYaw + (bleacherSide > 0 ? -Math.PI / 2 : Math.PI / 2);
+
+    const standMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.65, metalness: 0.25 });
+    const stepGeo = new THREE.BoxGeometry(28, 1.6, 3.2);
+    const roofGeo = new THREE.BoxGeometry(30, 0.8, 10.5);
+    const roofMat = new THREE.MeshStandardMaterial({ color: this.mapDef.dividerColor, roughness: 0.45 });
+
+    const stand = new THREE.Group();
+    stand.position.set(bPos.x, Math.max(0, s.point.y), bPos.z);
+    stand.rotation.y = faceYaw;
+
+    for (let row = 0; row < 3; row++) {
+      const step = new THREE.Mesh(stepGeo, standMat);
+      step.position.set(0, 0.8 + row * 1.55, -row * 2.8);
+      step.castShadow = true;
+      step.receiveShadow = true;
+      stand.add(step);
+
+      // Compute world coordinates for 14 cheering Toads per row
+      for (let seat = 0; seat < 14; seat++) {
+        const localX = -12.2 + seat * 1.88;
+        const localY = 1.65 + row * 1.55;
+        const localZ = -row * 2.8;
+        const cosY = Math.cos(faceYaw);
+        const sinY = Math.sin(faceYaw);
+        const wx = stand.position.x + localX * cosY + localZ * sinY;
+        const wz = stand.position.z - localX * sinY + localZ * cosY;
+        crowdCoords.push({
+          x: wx,
+          y: stand.position.y + localY,
+          z: wz,
+          yaw: faceYaw,
+          scale: 0.88 + ((seat + row) % 3) * 0.08,
+        });
+      }
+    }
+
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.set(0, 9.5, -3.0);
+    roof.rotation.x = 0.14;
+    roof.castShadow = true;
+    stand.add(roof);
+
+    this.group.add(stand);
+    this.disposables.push(standMat, stepGeo, roofGeo, roofMat);
+  }
+
+  private buildStadiumColiseum(
+    crowdCoords: { x: number; y: number; z: number; yaw: number; scale: number }[]
+  ): void {
+    const cx = 86;
+    const cz = -16;
     const tiers = [
       { radius: 245, y: 12, height: 18, color: '#1e293b' },
       { radius: 266, y: 28, height: 22, color: '#0f172a' },
@@ -1377,69 +1940,173 @@ export class StadiumTrack {
         side: THREE.BackSide,
       });
       const mesh = new THREE.Mesh(ringGeo, ringMat);
-      mesh.position.y = tier.y;
+      mesh.position.set(cx, tier.y, cz);
       this.group.add(mesh);
       this.disposables.push(ringGeo, ringMat);
     });
 
-    const specGeo = new THREE.CapsuleGeometry(0.85, 1.2, 4, 8);
-    const specMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.55 });
-    const inst = new THREE.InstancedMesh(specGeo, specMat, this.spectatorCount);
-    inst.frustumCulled = false;
-
-    const palette = [
-      new THREE.Color('#ef4444'),
-      new THREE.Color('#3b82f6'),
-      new THREE.Color('#22c55e'),
-      new THREE.Color('#facc15'),
-      new THREE.Color('#ec4899'),
-      new THREE.Color('#f97316'),
-    ];
-    this.spectatorPhases = new Float32Array(this.spectatorCount);
-
-    for (let i = 0; i < this.spectatorCount; i++) {
-      const angle = (i / this.spectatorCount) * Math.PI * 2 * 3 + (Math.random() - 0.5) * 0.05;
+    const coliseumCount = 720;
+    for (let i = 0; i < coliseumCount; i++) {
+      const angle = (i / coliseumCount) * Math.PI * 2 * 3 + (Math.random() - 0.5) * 0.05;
       const tierIdx = i % 2;
       const r = tierIdx === 0 ? 236 + Math.random() * 6 : 254 + Math.random() * 6;
       const y = tierIdx === 0 ? 11 + Math.random() * 8 : 26 + Math.random() * 10;
-      this._tmpPos.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
-      this._tmpQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -angle + Math.PI / 2);
-      const s = 0.85 + Math.random() * 0.35;
-      this._tmpScale.set(s, s, s);
-      const mat4 = new THREE.Matrix4().compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-      this.spectatorBaseMatrices.push(mat4);
-      this.spectatorPhases[i] = Math.random() * Math.PI * 2;
-      inst.setMatrixAt(i, mat4);
-      inst.setColorAt(i, palette[i % palette.length]);
+      crowdCoords.push({
+        x: cx + Math.cos(angle) * r,
+        y,
+        z: cz + Math.sin(angle) * r,
+        yaw: -angle - Math.PI / 2,
+        scale: 0.9 + Math.random() * 0.35,
+      });
     }
-    inst.instanceMatrix.needsUpdate = true;
-    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    inst.computeBoundingSphere();
 
-    this.spectatorsMesh = inst;
-    this.group.add(inst);
+    // Coliseum Infield Paddock Tents & Landscaped Shrubs (collision-checked)
+    const tentGeo = new THREE.ConeGeometry(5.5, 4.5, 4);
+    const tentBaseGeo = new THREE.BoxGeometry(7.2, 3.2, 7.2);
+    const tentMat = new THREE.MeshStandardMaterial({ color: '#ef4444', roughness: 0.45 });
+    const tentWallMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.6 });
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.3;
+      const tx = cx + Math.cos(a) * 62;
+      const tz = cz + Math.sin(a) * 62;
+      if (!this.reserveProp(tx, tz, 6.5, 6.0)) continue;
+      const tent = new THREE.Group();
+      tent.position.set(tx, 0, tz);
+      const base = new THREE.Mesh(tentBaseGeo, tentWallMat);
+      base.position.y = 1.6;
+      tent.add(base);
+      const top = new THREE.Mesh(tentGeo, tentMat);
+      top.position.y = 5.4;
+      top.rotation.y = Math.PI / 4;
+      tent.add(top);
+      this.group.add(tent);
+    }
 
     const roofRingGeo = new THREE.TorusGeometry(278, 4.2, 10, 64);
     roofRingGeo.rotateX(Math.PI / 2);
     const roofRingMat = new THREE.MeshStandardMaterial({ color: '#1e293b', metalness: 0.85, roughness: 0.28 });
     const roofRing = new THREE.Mesh(roofRingGeo, roofRingMat);
-    roofRing.position.y = 58;
+    roofRing.position.set(cx, 58, cz);
     this.group.add(roofRing);
 
     const neonHaloGeo = new THREE.TorusGeometry(272, 0.85, 8, 64);
     neonHaloGeo.rotateX(Math.PI / 2);
     const neonHaloMat = new THREE.MeshBasicMaterial({ color: '#38bdf8' });
     const neonHalo = new THREE.Mesh(neonHaloGeo, neonHaloMat);
-    neonHalo.position.y = 54;
+    neonHalo.position.set(cx, 54, cz);
     this.group.add(neonHalo);
-    this.disposables.push(specGeo, specMat, roofRingGeo, roofRingMat, neonHaloGeo, neonHaloMat);
+    this.disposables.push(
+      tentGeo,
+      tentBaseGeo,
+      tentMat,
+      tentWallMat,
+      roofRingGeo,
+      roofRingMat,
+      neonHaloGeo,
+      neonHaloMat
+    );
+  }
+
+  private buildToadCrowdMeshes(
+    crowdCoords: { x: number; y: number; z: number; yaw: number; scale: number }[]
+  ): void {
+    if (crowdCoords.length === 0) return;
+    this.spectatorCount = crowdCoords.length;
+    this.spectatorBaseCoords = crowdCoords;
+    this.spectatorPhases = new Float32Array(this.spectatorCount);
+
+    // Multi-part 3D Mushroom-Kingdom Toad Character Crowd (no random pills!):
+    // 1) Vest Torso + Stubby Arms, 2) Cream Toad Head, 3) Colorful Mushroom Cap Dome, 4) Polka Spots
+    const vestGeo = new THREE.CylinderGeometry(0.44, 0.56, 0.86, 8);
+    vestGeo.translate(0, 0.43, 0);
+    const headGeo = new THREE.SphereGeometry(0.44, 10, 8);
+    headGeo.translate(0, 1.05, 0);
+    const capGeo = new THREE.SphereGeometry(0.84, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62);
+    capGeo.scale(1.06, 0.88, 1.06);
+    capGeo.translate(0, 1.24, 0);
+    const spotGeo = new THREE.SphereGeometry(0.24, 6, 5);
+
+    const vestMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.55 });
+    const headMat = new THREE.MeshStandardMaterial({ color: '#fed7aa', roughness: 0.65 });
+    const capMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.35 });
+    const spotMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.35 });
+
+    const bodyInst = new THREE.InstancedMesh(vestGeo, vestMat, this.spectatorCount);
+    const headInst = new THREE.InstancedMesh(headGeo, headMat, this.spectatorCount);
+    const capInst = new THREE.InstancedMesh(capGeo, capMat, this.spectatorCount);
+    const spotInst = new THREE.InstancedMesh(spotGeo, spotMat, this.spectatorCount * 3);
+
+    bodyInst.frustumCulled = false;
+    headInst.frustumCulled = false;
+    capInst.frustumCulled = false;
+    spotInst.frustumCulled = false;
+
+    const vestColors = [
+      new THREE.Color('#2563eb'),
+      new THREE.Color('#dc2626'),
+      new THREE.Color('#16a34a'),
+      new THREE.Color('#9333ea'),
+      new THREE.Color('#f97316'),
+    ];
+    const capColors = [
+      new THREE.Color('#ef4444'),
+      new THREE.Color('#3b82f6'),
+      new THREE.Color('#22c55e'),
+      new THREE.Color('#facc15'),
+      new THREE.Color('#ec4899'),
+    ];
+
+    const spotVec = new THREE.Vector3();
+    for (let i = 0; i < this.spectatorCount; i++) {
+      const c = crowdCoords[i];
+      this.spectatorPhases[i] = (i * 1.37) % (Math.PI * 2);
+
+      this._tmpPos.set(c.x, c.y, c.z);
+      this._tmpQuat.setFromAxisAngle(this._upAxis, c.yaw);
+      this._tmpScale.setScalar(c.scale);
+      this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+
+      bodyInst.setMatrixAt(i, this._tmpMat);
+      headInst.setMatrixAt(i, this._tmpMat);
+      capInst.setMatrixAt(i, this._tmpMat);
+
+      bodyInst.setColorAt(i, vestColors[i % vestColors.length]);
+      capInst.setColorAt(i, capColors[(i + 2) % capColors.length]);
+
+      for (let sp = 0; sp < 3; sp++) {
+        spotVec.copy(this.crowdSpotOffsets[sp]).multiplyScalar(c.scale).applyQuaternion(this._tmpQuat);
+        this._tmpPos.set(c.x + spotVec.x, c.y + spotVec.y, c.z + spotVec.z);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        spotInst.setMatrixAt(i * 3 + sp, this._tmpMat);
+      }
+    }
+
+    bodyInst.instanceMatrix.needsUpdate = true;
+    headInst.instanceMatrix.needsUpdate = true;
+    capInst.instanceMatrix.needsUpdate = true;
+    spotInst.instanceMatrix.needsUpdate = true;
+    if (bodyInst.instanceColor) bodyInst.instanceColor.needsUpdate = true;
+    if (capInst.instanceColor) capInst.instanceColor.needsUpdate = true;
+    bodyInst.computeBoundingSphere();
+    headInst.computeBoundingSphere();
+    capInst.computeBoundingSphere();
+    spotInst.computeBoundingSphere();
+
+    this.spectatorsMesh = bodyInst;
+    this.spectatorHeadMesh = headInst;
+    this.spectatorCapMesh = capInst;
+    this.spectatorSpotMesh = spotInst;
+    this.group.add(bodyInst, headInst, capInst, spotInst);
+
+    this.disposables.push(vestGeo, headGeo, capGeo, spotGeo, vestMat, headMat, capMat, spotMat);
   }
 
   private buildTunnelAndTracksideBoards(): void {
     const archMat = new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.75, roughness: 0.3 });
     const neonArchMat = new THREE.MeshBasicMaterial({ color: '#f97316' });
-    const archGeo = new THREE.TorusGeometry(TRACK_HALF_WIDTH + 3.2, 1.15, 8, 28, Math.PI);
-    const stripGeo = new THREE.TorusGeometry(TRACK_HALF_WIDTH + 2.1, 0.24, 6, 28, Math.PI);
+    // Widen neon tunnel arches outside barriers (BARRIER_HALF_WIDTH + 2.8 = 19.2)
+    const archGeo = new THREE.TorusGeometry(BARRIER_HALF_WIDTH + 2.8, 1.15, 8, 28, Math.PI);
+    const stripGeo = new THREE.TorusGeometry(BARRIER_HALF_WIDTH + 1.7, 0.24, 6, 28, Math.PI);
 
     for (let i = 0; i < 5; i++) {
       const tVal = 0.59 + i * 0.009;
@@ -1474,13 +2141,15 @@ export class StadiumTrack {
     const boardGeo = new THREE.BoxGeometry(10, 2.5, 0.4);
     const boardMat = new THREE.MeshBasicMaterial({ map: boardTex });
 
-    for (let i = 0; i < 14; i++) {
-      const idx = Math.floor(((i + 0.5) / 14) * SAMPLE_COUNT) % SAMPLE_COUNT;
+    for (let i = 0; i < 16; i++) {
+      const idx = Math.floor(((i + 0.5) / 16) * SAMPLE_COUNT) % SAMPLE_COUNT;
       const s = this.samples[idx];
       const side = i % 2 === 0 ? 1 : -1;
+      const bPos = s.point.clone().addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 3.6));
+      if (!this.isOutwardFromLoop(bPos.x, bPos.z, s)) continue;
+      if (!this.reserveProp(bPos.x, bPos.z, 5.2, 3.0)) continue;
       const board = new THREE.Mesh(boardGeo, boardMat);
-      board.position.copy(s.point).addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 2.0));
-      board.position.y += 2.3;
+      board.position.set(bPos.x, s.point.y + 2.4, bPos.z);
       board.rotation.y = Math.atan2(s.tangent.x, s.tangent.z) + (side > 0 ? -Math.PI / 2 : Math.PI / 2);
       this.group.add(board);
     }
@@ -1489,6 +2158,8 @@ export class StadiumTrack {
   }
 
   private buildFloodlightsAndJumbotrons(): void {
+    const cx = 86;
+    const cz = -16;
     const towerMat = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.85, roughness: 0.25 });
     const bulbMat = new THREE.MeshBasicMaterial({ color: '#fef9c3' });
     const beamMat = new THREE.MeshBasicMaterial({
@@ -1509,8 +2180,8 @@ export class StadiumTrack {
       const a = (i / 8) * Math.PI * 2 + 0.2;
       const r = 242;
       const rig = new THREE.Group();
-      rig.position.set(Math.cos(a) * r, 34, Math.sin(a) * r);
-      rig.lookAt(0, 10, 0);
+      rig.position.set(cx + Math.cos(a) * r, 34, cz + Math.sin(a) * r);
+      rig.lookAt(cx, 10, cz);
 
       rig.add(new THREE.Mesh(poleGeo, towerMat));
       const head = new THREE.Mesh(headGeo, bulbMat);
@@ -1536,8 +2207,8 @@ export class StadiumTrack {
     const frameMat = new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.7, roughness: 0.3 });
     const screenGeo = new THREE.PlaneGeometry(41, 19.5);
     [
-      { pos: new THREE.Vector3(0, 42, -210), rotY: 0 },
-      { pos: new THREE.Vector3(0, 42, 210), rotY: Math.PI },
+      { pos: new THREE.Vector3(cx, 44, cz - 216), rotY: 0 },
+      { pos: new THREE.Vector3(cx, 44, cz + 216), rotY: Math.PI },
     ].forEach((loc) => {
       const jt = createJumbotronTexture();
       this.jumbotrons.push({ ctx: jt.ctx, texture: jt.texture });
@@ -1565,7 +2236,7 @@ export class StadiumTrack {
       });
       const holo = new THREE.Mesh(holoGeo, holoMat);
       const ang = (i / 4) * Math.PI * 2 + 0.5;
-      holo.position.set(Math.cos(ang) * 70, 18, Math.sin(ang) * 70);
+      holo.position.set(cx + Math.cos(ang) * 44, 22, cz + Math.sin(ang) * 44);
       this.group.add(holo);
       this.holoBillboards.push(holo);
       this.disposables.push(holoMat);
@@ -1598,9 +2269,9 @@ export class StadiumTrack {
       new THREE.Color('#f472b6'),
     ];
     for (let i = 0; i < count; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 320;
+      pos[i * 3] = 86 + (Math.random() - 0.5) * 340;
       pos[i * 3 + 1] = 8 + Math.random() * 48;
-      pos[i * 3 + 2] = (Math.random() - 0.5) * 320;
+      pos[i * 3 + 2] = -16 + (Math.random() - 0.5) * 340;
       this.confettiVel[i * 3] = (Math.random() - 0.5) * 2.5;
       this.confettiVel[i * 3 + 1] = -2.0 - Math.random() * 2.5;
       this.confettiVel[i * 3 + 2] = (Math.random() - 0.5) * 2.5;
@@ -1745,15 +2416,36 @@ export class StadiumTrack {
       this.searchlights[i].rotation.z = Math.sin(elapsed * 0.75 + i * 1.1) * 0.42;
     }
 
-    if (this.spectatorsMesh) {
+    if (
+      this.spectatorsMesh &&
+      this.spectatorHeadMesh &&
+      this.spectatorCapMesh &&
+      this.spectatorSpotMesh
+    ) {
+      const spotVec = this._tmpPos;
       for (let i = 0; i < this.spectatorCount; i++) {
-        const base = this.spectatorBaseMatrices[i];
-        this._tmpMat.copy(base);
-        const hop = Math.abs(Math.sin(elapsed * 5.8 + this.spectatorPhases[i])) * 0.75;
-        this._tmpMat.elements[13] = base.elements[13] + hop;
+        const c = this.spectatorBaseCoords[i];
+        const hop = Math.abs(Math.sin(elapsed * 5.8 + this.spectatorPhases[i])) * 0.65;
+        this._tmpQuat.setFromAxisAngle(this._upAxis, c.yaw);
+        this._tmpScale.setScalar(c.scale);
+
+        this._tmpPos.set(c.x, c.y + hop, c.z);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
         this.spectatorsMesh.setMatrixAt(i, this._tmpMat);
+        this.spectatorHeadMesh.setMatrixAt(i, this._tmpMat);
+        this.spectatorCapMesh.setMatrixAt(i, this._tmpMat);
+
+        for (let sp = 0; sp < 3; sp++) {
+          spotVec.copy(this.crowdSpotOffsets[sp]).multiplyScalar(c.scale).applyQuaternion(this._tmpQuat);
+          spotVec.set(c.x + spotVec.x, c.y + hop + spotVec.y, c.z + spotVec.z);
+          this._tmpMat.compose(spotVec, this._tmpQuat, this._tmpScale);
+          this.spectatorSpotMesh.setMatrixAt(i * 3 + sp, this._tmpMat);
+        }
       }
       this.spectatorsMesh.instanceMatrix.needsUpdate = true;
+      this.spectatorHeadMesh.instanceMatrix.needsUpdate = true;
+      this.spectatorCapMesh.instanceMatrix.needsUpdate = true;
+      this.spectatorSpotMesh.instanceMatrix.needsUpdate = true;
     }
 
     if (this.confettiPoints) {

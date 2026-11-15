@@ -4,6 +4,7 @@ export interface NetPlayerInfo {
   id: string;
   name: string;
   characterId: string;
+  vehicleId: string;
   ready: boolean;
   isHost: boolean;
   slotIndex: number;
@@ -12,6 +13,7 @@ export interface NetPlayerInfo {
 export interface NetKartState {
   id: string;
   characterId: string;
+  vehicleId: string;
   x: number;
   y: number;
   z: number;
@@ -60,10 +62,15 @@ export type ClientToServerMessage =
       roomCode: string;
       playerName: string;
       characterId: string;
+      vehicleId?: string;
     }
   | {
       type: 'room:selectCharacter';
       characterId: string;
+    }
+  | {
+      type: 'room:selectVehicle';
+      vehicleId: string;
     }
   | {
       type: 'room:setReady';

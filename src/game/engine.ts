@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { ItemKind, NetHazard, NetKartState } from '../shared/protocol.ts';
 import { ProceduralAudioEngine } from './audio.ts';
-import { getMapById, type MapId } from './maps.ts';
+import { getMapById, type MapId, type WeatherChoice } from './maps.ts';
 import {
   buildBananaMesh,
   buildGreenShellMesh,
@@ -24,6 +24,7 @@ import { RaceReplayRecorder, type ReplayEvent } from './replay.ts';
 import { getRacerById, ROSTER } from './roster.ts';
 import { createProceduralTextures, type ProceduralTextureSet } from './textures.ts';
 import { BARRIER_HALF_WIDTH, SAMPLE_COUNT, StadiumTrack } from './track.ts';
+import { VEHICLES, type VehicleId } from './vehicles.ts';
 
 export type EngineMode =
   | 'title'
@@ -33,6 +34,8 @@ export type EngineMode =
   | 'paused'
   | 'finished'
   | 'replay';
+
+export type PaddockStage = 'character' | 'vehicle';
 
 export type ControlMode =
   | 'keyboard'
@@ -51,8 +54,12 @@ export interface BoostCallout {
 
 export interface HudSnapshot {
   mode: EngineMode;
+  paddockStage: PaddockStage;
+  selectedVehicleId: VehicleId;
   gameMode: GameModeType;
   mapId: MapId;
+  weatherChoice: WeatherChoice;
+  activeWeather: Exclude<WeatherChoice, 'dynamic'>;
   controlMode: ControlMode;
   rank: number;
   totalRacers: number;
@@ -74,6 +81,7 @@ export interface HudSnapshot {
     id: string;
     name: string;
     characterId: string;
+    vehicleId: string;
     rank: number;
     lap: number;
     finished: boolean;
@@ -116,9 +124,10 @@ interface ParticleSlot {
   color: THREE.Color;
 }
 
-const PARTICLE_POOL_SIZE = 280;
+const PARTICLE_POOL_SIZE = 320;
 const SKID_POOL_SIZE = 200;
-const TRAIL_POINTS = 18;
+const TRAIL_POINTS = 26;
+const RAIN_COUNT = 340;
 
 class AdditiveRibbonTrail {
   public readonly mesh: THREE.Mesh;
@@ -130,15 +139,22 @@ class AdditiveRibbonTrail {
   private headColor = new THREE.Color('#38bdf8');
 
   constructor(private maxPoints = TRAIL_POINTS) {
-    this.positions = new Float32Array(maxPoints * 2 * 3);
-    this.colors = new Float32Array(maxPoints * 2 * 3);
+    // 4 vertices per sample point: [horiz-L, horiz-R, vert-Bot, vert-Top] for volumetric crossed ribbon
+    this.positions = new Float32Array(maxPoints * 4 * 3);
+    this.colors = new Float32Array(maxPoints * 4 * 3);
     const indices: number[] = [];
     for (let i = 0; i < maxPoints - 1; i++) {
-      const a = i * 2;
-      const b = a + 1;
-      const c = a + 2;
-      const d = a + 3;
-      indices.push(a, b, c, b, d, c);
+      const hA = i * 4;
+      const hB = hA + 1;
+      const hC = (i + 1) * 4;
+      const hD = hC + 1;
+      indices.push(hA, hB, hC, hB, hD, hC);
+
+      const vA = hA + 2;
+      const vB = hA + 3;
+      const vC = hC + 2;
+      const vD = hC + 3;
+      indices.push(vA, vB, vC, vB, vD, vC);
     }
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
@@ -148,7 +164,7 @@ class AdditiveRibbonTrail {
     this.mat = new THREE.MeshBasicMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.92,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -197,23 +213,32 @@ class AdditiveRibbonTrail {
     for (let i = 0; i < this.maxPoints; i++) {
       const idx = Math.min(i, this.history.length - 1);
       const pt = this.history[idx];
-      const fade = i < this.history.length ? Math.pow(1 - i / this.history.length, 1.45) : 0;
-      const w = pt.w * (0.25 + 0.75 * fade);
+      const fade = i < this.history.length ? Math.pow(1 - i / this.history.length, 1.32) : 0;
+      const w = pt.w * (0.2 + 0.8 * fade);
+      const vh = w * 0.78;
 
-      const pOff = i * 6;
+      const pOff = i * 12;
+      // Horizontal ribbon
       this.positions[pOff] = pt.x - pt.rx * w;
       this.positions[pOff + 1] = pt.y;
       this.positions[pOff + 2] = pt.z - pt.rz * w;
       this.positions[pOff + 3] = pt.x + pt.rx * w;
       this.positions[pOff + 4] = pt.y;
       this.positions[pOff + 5] = pt.z + pt.rz * w;
+      // Vertical crossed ribbon (vivid from rear chase camera)
+      this.positions[pOff + 6] = pt.x;
+      this.positions[pOff + 7] = pt.y - vh * 0.65;
+      this.positions[pOff + 8] = pt.z;
+      this.positions[pOff + 9] = pt.x;
+      this.positions[pOff + 10] = pt.y + vh;
+      this.positions[pOff + 11] = pt.z;
 
-      this.colors[pOff] = pt.r * fade;
-      this.colors[pOff + 1] = pt.g * fade;
-      this.colors[pOff + 2] = pt.b * fade;
-      this.colors[pOff + 3] = pt.r * fade;
-      this.colors[pOff + 4] = pt.g * fade;
-      this.colors[pOff + 5] = pt.b * fade;
+      for (let k = 0; k < 4; k++) {
+        const cOff = pOff + k * 3;
+        this.colors[cOff] = pt.r * fade;
+        this.colors[cOff + 1] = pt.g * fade;
+        this.colors[cOff + 2] = pt.b * fade;
+      }
     }
     this.geo.attributes.position.needsUpdate = true;
     this.geo.attributes.color.needsUpdate = true;
@@ -249,6 +274,18 @@ export class KartGameEngine {
   private mode: EngineMode = 'title';
   private gameMode: GameModeType = 'grand_prix';
   private currentMapId: MapId = 'plaza';
+  private weatherChoice: WeatherChoice = 'sunny';
+  private activeWeather: Exclude<WeatherChoice, 'dynamic'> = 'sunny';
+  private weatherRainFactor = 0;
+  private weatherNightFactor = 0;
+  private weatherWetness = 0;
+  private rainLines: THREE.LineSegments;
+  private rainOffsets: Float32Array;
+  private rainMat: THREE.LineBasicMaterial;
+  private weatherSkyTop = new THREE.Color();
+  private weatherSkyMid = new THREE.Color();
+  private weatherSkyHor = new THREE.Color();
+  private weatherFog = new THREE.Color();
   private controlMode: ControlMode = 'keyboard';
   private countdownValue = 3;
   private countdownTimer = 0;
@@ -264,15 +301,19 @@ export class KartGameEngine {
   private activeBoostCallout: BoostCallout | null = null;
   private boostCalloutClearAt = 0;
 
-  // Paddock Showcase Rig Cache (zero-stutter character switching)
+  // Paddock Showcase Rig Cache (zero-stutter character + vehicle switching)
   private paddockRigCache = new Map<string, KartVisualRig>();
   private paddockRig: KartVisualRig | null = null;
   private paddockSelectedId = 'mario';
+  private paddockSelectedVehicleId: VehicleId = 'standard_kart';
+  private paddockStage: PaddockStage = 'character';
   private paddockSelectAnim = 0;
   private paddockOrbitYaw = 0.52;
   private paddockTargetYaw = 0.52;
   private paddockDragActive = false;
   private paddockLastX = 0;
+  private rouletteTickTimer = 0;
+  private rouletteTickStep = 0;
 
   // Race Entities & 3D Drift/Nitro Ribbon Trails
   private karts: KartPhysicsState[] = [];
@@ -300,7 +341,7 @@ export class KartGameEngine {
   private replayPaused = false;
   private replaySpeed: 1 | 2 = 1;
   private replayEventBanner: string | null = null;
-  private replaySavedSpecIds = new Map<string, { name: string; characterId: string }>();
+  private replaySavedSpecIds = new Map<string, { name: string; characterId: string; vehicleId: VehicleId }>();
 
   // Particle & Skid Pools (zero per-frame GC)
   private particleMesh: THREE.InstancedMesh;
@@ -489,6 +530,27 @@ export class KartGameEngine {
     this.skidMesh.instanceMatrix.needsUpdate = true;
     this.scene.add(this.skidMesh);
 
+    // 5b. 3D Dynamic Weather Rain Streak Pool
+    this.rainOffsets = new Float32Array(RAIN_COUNT * 3);
+    const rainPos = new Float32Array(RAIN_COUNT * 6);
+    for (let i = 0; i < RAIN_COUNT; i++) {
+      this.rainOffsets[i * 3] = (Math.random() - 0.5) * 90;
+      this.rainOffsets[i * 3 + 1] = Math.random() * 44;
+      this.rainOffsets[i * 3 + 2] = (Math.random() - 0.5) * 90;
+    }
+    const rainGeo = new THREE.BufferGeometry();
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+    this.rainMat = new THREE.LineBasicMaterial({
+      color: '#bae6fd',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    this.rainLines = new THREE.LineSegments(rainGeo, this.rainMat);
+    this.rainLines.frustumCulled = false;
+    this.rainLines.visible = false;
+    this.scene.add(this.rainLines);
+
     // 6. Initialize Title Cutscene + Pre-warm default Paddock rig
     this.selectPaddockCharacter('mario', false);
     this.startTitleCutscene();
@@ -576,6 +638,215 @@ export class KartGameEngine {
     this.emitHudSnapshot();
   }
 
+  public setWeather(weather: WeatherChoice): void {
+    this.weatherChoice = weather;
+    if (weather !== 'dynamic') {
+      this.activeWeather = weather;
+    }
+    this.updateWeatherAtmosphere(1.0, this.clock.elapsedTime);
+    this.emitHudSnapshot();
+  }
+
+  private getWeatherPreset(w: Exclude<WeatherChoice, 'dynamic'>, mapId: MapId) {
+    const def = getMapById(mapId);
+    if (w === 'sunset') {
+      return {
+        top: '#311042',
+        mid: '#c026d3',
+        hor: '#fb923c',
+        fog: '#fdba74',
+        fogDensity: 0.00145,
+        hemiSky: '#fed7aa',
+        hemiGround: '#7c2d12',
+        hemiInt: 0.92,
+        sunCol: '#ffedd5',
+        sunInt: 2.35,
+        rimCol: '#f97316',
+        rimInt: 1.15,
+        rain: 0,
+        night: 0.2,
+        wet: 0.05,
+      };
+    }
+    if (w === 'rainy') {
+      return {
+        top: '#1e293b',
+        mid: '#475569',
+        hor: '#94a3b8',
+        fog: '#64748b',
+        fogDensity: 0.0024,
+        hemiSky: '#94a3b8',
+        hemiGround: '#1e293b',
+        hemiInt: 0.85,
+        sunCol: '#cbd5e1',
+        sunInt: 1.45,
+        rimCol: '#38bdf8',
+        rimInt: 1.05,
+        rain: 1,
+        night: 0.12,
+        wet: 0.92,
+      };
+    }
+    if (w === 'night') {
+      return {
+        top: '#020617',
+        mid: '#0f172a',
+        hor: '#1e293b',
+        fog: '#0f172a',
+        fogDensity: 0.0018,
+        hemiSky: '#38bdf8',
+        hemiGround: '#090d16',
+        hemiInt: 0.72,
+        sunCol: '#bae6fd',
+        sunInt: 1.65,
+        rimCol: '#a855f7',
+        rimInt: 1.25,
+        rain: 0,
+        night: 1,
+        wet: 0.2,
+      };
+    }
+    return {
+      top: def.skyTop,
+      mid: def.skyMid,
+      hor: def.skyHorizon,
+      fog: def.fogColor,
+      fogDensity: def.fogDensity,
+      hemiSky: def.theme === 'stadium' ? '#93c5fd' : '#e0f2fe',
+      hemiGround: def.theme === 'plaza' ? '#9a3412' : '#3f6212',
+      hemiInt: def.theme === 'stadium' ? 0.9 : 1.15,
+      sunCol: '#fffbeb',
+      sunInt: def.theme === 'stadium' ? 2.45 : 2.75,
+      rimCol: def.theme === 'skyline' ? '#f59e0b' : '#38bdf8',
+      rimInt: 0.92,
+      rain: 0,
+      night: def.theme === 'stadium' ? 0.35 : 0,
+      wet: 0,
+    };
+  }
+
+  private updateWeatherAtmosphere(dt: number, elapsed: number): void {
+    const order: Exclude<WeatherChoice, 'dynamic'>[] = ['sunny', 'sunset', 'rainy', 'night'];
+    let presetA = this.getWeatherPreset('sunny', this.currentMapId);
+    let presetB = presetA;
+    let blend = 0;
+
+    if (this.weatherChoice === 'dynamic') {
+      const cycleSec = 26;
+      const totalPos = (elapsed / cycleSec) % order.length;
+      const idxA = Math.floor(totalPos);
+      const idxB = (idxA + 1) % order.length;
+      const frac = totalPos - idxA;
+      // Hold each weather cleanly for first 75%, smoothly transition in last 25%
+      blend = frac > 0.72 ? (frac - 0.72) / 0.28 : 0;
+      presetA = this.getWeatherPreset(order[idxA], this.currentMapId);
+      presetB = this.getWeatherPreset(order[idxB], this.currentMapId);
+      const resolved = order[blend > 0.5 ? idxB : idxA];
+      if (resolved !== this.activeWeather) {
+        this.activeWeather = resolved;
+      }
+    } else {
+      this.activeWeather = this.weatherChoice;
+      presetA = this.getWeatherPreset(this.weatherChoice, this.currentMapId);
+      presetB = presetA;
+      blend = 0;
+    }
+
+    const alpha = Math.min(1, dt * 3.5);
+    this.weatherSkyTop.set(presetA.top).lerp(this._tmpColor.set(presetB.top), blend);
+    this.weatherSkyMid.set(presetA.mid).lerp(this._tmpColor.set(presetB.mid), blend);
+    this.weatherSkyHor.set(presetA.hor).lerp(this._tmpColor.set(presetB.hor), blend);
+    this.weatherFog.set(presetA.fog).lerp(this._tmpColor.set(presetB.fog), blend);
+
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.lerp(this.weatherSkyMid, alpha);
+    }
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.lerp(this.weatherFog, alpha);
+      const targetDens = THREE.MathUtils.lerp(presetA.fogDensity, presetB.fogDensity, blend);
+      this.scene.fog.density = THREE.MathUtils.lerp(this.scene.fog.density, targetDens, alpha);
+    }
+
+    this.hemiLight.color.lerp(this._tmpColor.set(presetA.hemiSky).lerp(new THREE.Color(presetB.hemiSky), blend), alpha);
+    this.hemiLight.groundColor.lerp(this._tmpColor.set(presetA.hemiGround).lerp(new THREE.Color(presetB.hemiGround), blend), alpha);
+    this.hemiLight.intensity = THREE.MathUtils.lerp(
+      this.hemiLight.intensity,
+      THREE.MathUtils.lerp(presetA.hemiInt, presetB.hemiInt, blend),
+      alpha
+    );
+
+    this.sunKeyLight.color.lerp(this._tmpColor.set(presetA.sunCol).lerp(new THREE.Color(presetB.sunCol), blend), alpha);
+    this.sunKeyLight.intensity = THREE.MathUtils.lerp(
+      this.sunKeyLight.intensity,
+      THREE.MathUtils.lerp(presetA.sunInt, presetB.sunInt, blend),
+      alpha
+    );
+
+    this.rimLight.color.lerp(this._tmpColor.set(presetA.rimCol).lerp(new THREE.Color(presetB.rimCol), blend), alpha);
+    this.rimLight.intensity = THREE.MathUtils.lerp(
+      this.rimLight.intensity,
+      THREE.MathUtils.lerp(presetA.rimInt, presetB.rimInt, blend),
+      alpha
+    );
+
+    this.weatherRainFactor = THREE.MathUtils.lerp(
+      this.weatherRainFactor,
+      THREE.MathUtils.lerp(presetA.rain, presetB.rain, blend),
+      alpha
+    );
+    this.weatherNightFactor = THREE.MathUtils.lerp(
+      this.weatherNightFactor,
+      THREE.MathUtils.lerp(presetA.night, presetB.night, blend),
+      alpha
+    );
+    this.weatherWetness = THREE.MathUtils.lerp(
+      this.weatherWetness,
+      THREE.MathUtils.lerp(presetA.wet, presetB.wet, blend),
+      alpha
+    );
+
+    this.track.applyWeatherVisuals(
+      this.weatherSkyTop,
+      this.weatherSkyMid,
+      this.weatherSkyHor,
+      this.weatherWetness,
+      this.weatherNightFactor,
+      this.weatherRainFactor
+    );
+
+    // Update 3D Rain Streaks around camera when racing / title
+    const showRain = this.weatherRainFactor > 0.04 && this.mode !== 'paddock';
+    this.rainLines.visible = showRain;
+    if (showRain) {
+      this.rainMat.opacity = this.weatherRainFactor * 0.56;
+      const posAttr = this.rainLines.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      const camX = this.camera.position.x;
+      const camY = this.camera.position.y;
+      const camZ = this.camera.position.z;
+      for (let i = 0; i < RAIN_COUNT; i++) {
+        this.rainOffsets[i * 3] -= dt * 3.5;
+        this.rainOffsets[i * 3 + 1] -= dt * 56;
+        if (this.rainOffsets[i * 3 + 1] < -12) {
+          this.rainOffsets[i * 3] = (Math.random() - 0.5) * 90;
+          this.rainOffsets[i * 3 + 1] = 32 + Math.random() * 14;
+          this.rainOffsets[i * 3 + 2] = (Math.random() - 0.5) * 90;
+        }
+        const rx = camX + this.rainOffsets[i * 3];
+        const ry = Math.max(-1, camY - 12 + this.rainOffsets[i * 3 + 1]);
+        const rz = camZ + this.rainOffsets[i * 3 + 2];
+        const idx = i * 6;
+        arr[idx] = rx;
+        arr[idx + 1] = ry;
+        arr[idx + 2] = rz;
+        arr[idx + 3] = rx + 0.25;
+        arr[idx + 4] = ry + 2.4;
+        arr[idx + 5] = rz + 0.15;
+      }
+      posAttr.needsUpdate = true;
+    }
+  }
+
   public loadMap(mapId: MapId): void {
     if (this.currentMapId === mapId) return;
     this.currentMapId = mapId;
@@ -593,6 +864,7 @@ export class KartGameEngine {
     this.track = new StadiumTrack(this.textures, mapDef);
     this.scene.add(this.track.group);
     this.applyMapAtmosphere(mapId);
+    this.updateWeatherAtmosphere(1.0, this.clock.elapsedTime);
     this.rebuildMinimapPath();
 
     if (this.paddockRig) {
@@ -615,10 +887,11 @@ export class KartGameEngine {
     this.track.paddockGroup.visible = false;
     this.track.setCountdownLights(0, true);
 
-    // Spawn 8 lively AI karts spread around the front stretch & ramp approaches
+    // Spawn 8 lively AI karts spread around the front stretch & ramp approaches with diverse vehicles
     for (let i = 0; i < 8; i++) {
       const spec = ROSTER[i % ROSTER.length];
-      const kart = createKartState(`demo_${i}`, spec.name, spec.id, i, this.track, false, false);
+      const vehId = VEHICLES[i % 12].id;
+      const kart = createKartState(`demo_${i}`, spec.name, spec.id, i, this.track, false, false, vehId);
       const sampleIdx = (10 + i * 11) % SAMPLE_COUNT;
       const s = this.track.samples[sampleIdx];
       const lat = ((i % 2 === 0 ? -1 : 1) * (2.5 + (i % 3) * 1.8));
@@ -628,10 +901,10 @@ export class KartGameEngine {
       kart.heading = Math.atan2(s.tangent.x, s.tangent.z);
       kart.trackIndex = sampleIdx;
       kart.trackT = s.t;
-      kart.speed = 46 + (i % 3) * 3;
+      kart.speed = 35 + (i % 3) * 2;
       this.karts.push(kart);
 
-      const rig = buildKartAndDriver(kart.spec, this.textures, !this.isSoftwareGl && i < 4);
+      const rig = buildKartAndDriver(kart.spec, this.textures, !this.isSoftwareGl && i < 4, vehId);
       rig.root.position.set(kart.x, kart.y, kart.z);
       rig.root.rotation.y = kart.heading;
       this.scene.add(rig.root);
@@ -642,33 +915,48 @@ export class KartGameEngine {
     this.emitHudSnapshot();
   }
 
-  public enterPaddock(): void {
+  public enterPaddock(stage: PaddockStage = 'character'): void {
     this.clearRaceEntities();
     this.mode = 'paddock';
+    this.paddockStage = stage;
     this.audio.stopMusic();
-    this.audio.updateEngine(0, false, false);
+    this.audio.updateEngine(0, false, false, false, false);
     this.track.paddockGroup.visible = true;
-    this.selectPaddockCharacter(this.paddockSelectedId, false);
+    this.selectPaddockCombo(this.paddockSelectedId, this.paddockSelectedVehicleId, false);
     this.paddockOrbitYaw = this.paddockTargetYaw;
-    this.camera.fov = 44;
-    this.camera.updateProjectionMatrix();
-    this.camera.position.set(2.5, 262.15, 5.45);
-    this.camera.lookAt(-1.45, 261.0, 0);
+    this.updatePaddock(0.1, this.clock.elapsedTime);
+    this.emitHudSnapshot();
+  }
+
+  public setPaddockStage(stage: PaddockStage): void {
+    this.paddockStage = stage;
+    this.paddockTargetYaw += 0.55;
+    this.audio.playSelect();
     this.emitHudSnapshot();
   }
 
   public selectPaddockCharacter(characterId: string, withSound = true): void {
+    this.selectPaddockCombo(characterId, this.paddockSelectedVehicleId, withSound);
+  }
+
+  public selectPaddockVehicle(vehicleId: VehicleId, withSound = true): void {
+    this.selectPaddockCombo(this.paddockSelectedId, vehicleId, withSound);
+  }
+
+  private selectPaddockCombo(characterId: string, vehicleId: VehicleId, withSound: boolean): void {
     this.paddockSelectedId = characterId;
+    this.paddockSelectedVehicleId = vehicleId;
     if (this.paddockRig) {
       this.track.paddockTurntable.remove(this.paddockRig.root);
       this.paddockRig = null;
     }
 
-    let rig = this.paddockRigCache.get(characterId);
+    const cacheKey = `${characterId}::${vehicleId}`;
+    let rig = this.paddockRigCache.get(cacheKey);
     if (!rig) {
       const spec = getRacerById(characterId);
-      rig = buildKartAndDriver(spec, this.textures, true);
-      this.paddockRigCache.set(characterId, rig);
+      rig = buildKartAndDriver(spec, this.textures, true, vehicleId);
+      this.paddockRigCache.set(cacheKey, rig);
     }
 
     rig.root.position.set(0, 0.36, 0);
@@ -677,22 +965,27 @@ export class KartGameEngine {
     this.paddockSelectAnim = 1.0;
     this.paddockTargetYaw += 0.65;
     if (withSound) this.audio.playSelect();
+    this.emitHudSnapshot();
   }
 
   public startRace(
     playerCharacterId: string,
     playerName: string,
-    remotePlayers: { id: string; name: string; characterId: string; slotIndex: number }[] = [],
+    remotePlayers: { id: string; name: string; characterId: string; vehicleId?: string; slotIndex: number }[] = [],
     skipCountdown = false,
-    gameModeOverride?: GameModeType
+    gameModeOverride?: GameModeType,
+    playerVehicleId?: VehicleId
   ): void {
     if (gameModeOverride) this.gameMode = gameModeOverride;
+    const chosenVehId = playerVehicleId ?? this.paddockSelectedVehicleId;
     this.audio.init();
     this.audio.setFinalLapTempo(false);
     this.clearRaceEntities();
     this.replay.reset();
     this.replaySavedSpecIds.clear();
     this.activeBoostCallout = null;
+    this.rouletteTickTimer = 0;
+    this.rouletteTickStep = 0;
 
     const localId = this.mpBridge?.localPlayerId ?? 'player_local';
     this.replayPlayerId = localId;
@@ -712,7 +1005,8 @@ export class KartGameEngine {
         localSlot,
         this.track,
         true,
-        false
+        false,
+        chosenVehId
       )
     );
 
@@ -728,7 +1022,8 @@ export class KartGameEngine {
             rp.slotIndex,
             this.track,
             false,
-            true
+            true,
+            (rp.vehicleId as VehicleId) || 'standard_kart'
           )
         );
       }
@@ -736,6 +1031,7 @@ export class KartGameEngine {
       const aiPool = ROSTER.filter((r) => !usedChars.has(r.id));
       while (racers.length < 8) {
         const spec = aiPool[(racers.length - 1) % aiPool.length];
+        const aiVeh = VEHICLES[(racers.length * 3 + 1) % 12].id;
         racers.push(
           createKartState(
             `ai_${racers.length}`,
@@ -744,7 +1040,8 @@ export class KartGameEngine {
             racers.length,
             this.track,
             false,
-            false
+            false,
+            aiVeh
           )
         );
       }
@@ -758,17 +1055,20 @@ export class KartGameEngine {
         idx,
         this.track,
         k.isPlayer,
-        k.isRemoteHuman
+        k.isRemoteHuman,
+        k.vehicle.id
       );
       this.karts.push(recreated);
       this.replaySavedSpecIds.set(recreated.id, {
         name: recreated.name,
         characterId: recreated.spec.id,
+        vehicleId: recreated.vehicle.id,
       });
       const rig = buildKartAndDriver(
         recreated.spec,
         this.textures,
-        !this.isSoftwareGl || recreated.isPlayer
+        !this.isSoftwareGl || recreated.isPlayer,
+        recreated.vehicle.id
       );
       rig.root.position.set(recreated.x, recreated.y, recreated.z);
       rig.root.rotation.y = recreated.heading;
@@ -816,7 +1116,7 @@ export class KartGameEngine {
   }
 
   public returnToPaddock(): void {
-    this.enterPaddock();
+    this.enterPaddock('character');
   }
 
   public returnToTitle(): void {
@@ -826,7 +1126,7 @@ export class KartGameEngine {
   public setPaused(paused: boolean): void {
     if (this.mode === 'racing' && paused) {
       this.mode = 'paused';
-      this.audio.updateEngine(0, false, false);
+      this.audio.updateEngine(0, false, false, false, false);
       this.emitHudSnapshot();
     } else if (this.mode === 'paused' && !paused) {
       this.mode = 'racing';
@@ -837,7 +1137,7 @@ export class KartGameEngine {
   public startReplay(): void {
     if (!this.replay.hasData()) return;
     this.audio.stopMusic();
-    this.audio.updateEngine(0, false, false);
+    this.audio.updateEngine(0, false, false, false, false);
     this.mode = 'replay';
     this.replayTimeMs = 0;
     this.replayPaused = false;
@@ -849,7 +1149,12 @@ export class KartGameEngine {
     if (this.kartRigs.size === 0) {
       for (const [id, info] of this.replaySavedSpecIds.entries()) {
         const spec = getRacerById(info.characterId);
-        const rig = buildKartAndDriver(spec, this.textures, !this.isSoftwareGl || id === this.replayPlayerId);
+        const rig = buildKartAndDriver(
+          spec,
+          this.textures,
+          !this.isSoftwareGl || id === this.replayPlayerId,
+          info.vehicleId
+        );
         this.scene.add(rig.root);
         this.kartRigs.set(id, rig);
       }
@@ -1121,7 +1426,16 @@ export class KartGameEngine {
       }
     },
     onItemPickup: (kart) => {
-      if (kart.isPlayer) this.audio.playItemBox();
+      if (kart.isPlayer) {
+        this.audio.playItemBox();
+        this.rouletteTickTimer = 0.085;
+        this.rouletteTickStep = 0;
+      }
+    },
+    onItemClaim: (kart) => {
+      if (kart.isPlayer) {
+        this.audio.playItemClaim();
+      }
     },
     onItemUse: (kart, item) => {
       if (item === 'shell' || item === 'banana') {
@@ -1130,7 +1444,7 @@ export class KartGameEngine {
         const fwdX = Math.sin(kart.heading);
         const fwdZ = Math.cos(kart.heading);
         const dist = isShell ? 2.6 : -2.5;
-        const speed = isShell ? 84 : 0;
+        const speed = isShell ? 64 : 0;
         const hz: NetHazard = {
           id: `${this.mpBridge ? 'net' : 'loc'}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           kind: item,
@@ -1239,6 +1553,7 @@ export class KartGameEngine {
     }
 
     this.track.animate(dt, elapsed);
+    this.updateWeatherAtmosphere(dt, elapsed);
 
     if (this.mode === 'title') {
       this.updateTitleCutscene(dt, elapsed);
@@ -1301,13 +1616,28 @@ export class KartGameEngine {
       this.paddockRig.wheels.forEach((w) => {
         w.rotation.x += dt * 2.2;
       });
+      this.paddockRig.hoverRotors.forEach((r) => {
+        r.rotation.y += dt * 16;
+      });
     }
 
-    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, 44, 6, dt);
+    // Auto-center & scale preview camera for mobile / narrow viewports vs widescreen desktop
+    const w = this.container.clientWidth || window.innerWidth;
+    const aspect = this.camera.aspect || 1;
+    const isCompact = w < 768 || aspect < 1.15;
+
+    const targetFov = isCompact ? 46 : 44;
+    const camX = isCompact ? 0.65 : 2.5;
+    const camY = isCompact ? 262.45 : 262.15;
+    const camZ = isCompact ? (aspect < 0.78 ? 8.4 : 6.4) : 5.45;
+    const lookX = isCompact ? 0 : -1.35;
+    const lookY = isCompact ? 260.78 : 261.0;
+
+    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 6, dt);
     this.camera.updateProjectionMatrix();
-    this._tmpV3.set(2.5, 262.15, 5.45);
+    this._tmpV3.set(camX, camY, camZ);
     this.camera.position.lerp(this._tmpV3, 1 - Math.exp(-6 * dt));
-    this.camera.lookAt(-1.45, 261.0, 0);
+    this.camera.lookAt(lookX, lookY, 0);
   }
 
   private updateTitleCutscene(dt: number, elapsed: number): void {
@@ -1567,11 +1897,11 @@ export class KartGameEngine {
 
     // Dynamic Chase Camera with Smooth Rear-View Swing (no sharp snap!) + Speed FOV
     if (playerKart) {
-      const speedRatio = Math.max(0, playerKart.speed) / 60;
+      const speedRatio = Math.max(0, playerKart.speed) / 48;
       const targetFov =
         this.mode === 'countdown'
           ? 54
-          : 58 + Math.min(speedRatio, 1.4) * 18 + (playerKart.boostTimer > 0 ? 7 : 0);
+          : 58 + Math.min(speedRatio, 1.35) * 16 + (playerKart.boostTimer > 0 ? 6.5 : 0);
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 7.5, dt);
       this.camera.updateProjectionMatrix();
 
@@ -1593,6 +1923,13 @@ export class KartGameEngine {
       this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, desiredY, 10, dt);
       this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, desiredZ, 11, dt);
 
+      // Chase camera anti-clipping above track deck / terrain
+      const camProj = this.track.projectOnTrack(this.camera.position.x, this.camera.position.z);
+      const minCamY = camProj.distance < BARRIER_HALF_WIDTH + 8 ? camProj.point.y + 1.85 : 1.5;
+      if (this.camera.position.y < minCamY) {
+        this.camera.position.y = minCamY;
+      }
+
       if (this.cameraShake > 0.001) {
         this.camera.position.x += (Math.random() - 0.5) * this.cameraShake;
         this.camera.position.y += (Math.random() - 0.5) * this.cameraShake * 0.7;
@@ -1613,7 +1950,22 @@ export class KartGameEngine {
       }
       this.camera.lookAt(this.camLookTarget);
 
-      this.audio.updateEngine(speedRatio, playerKart.boostTimer > 0, this.mode === 'racing');
+      // Item Roulette slot-tick SFX while spinning
+      if (playerKart.rouletteTimer > 0 && this.mode === 'racing') {
+        this.rouletteTickTimer -= dt;
+        if (this.rouletteTickTimer <= 0) {
+          this.rouletteTickTimer = 0.085;
+          this.audio.playRouletteTick(this.rouletteTickStep++);
+        }
+      }
+
+      this.audio.updateEngine(
+        speedRatio,
+        playerKart.boostTimer > 0,
+        this.mode === 'racing',
+        playerInput.throttle,
+        this.mode === 'countdown'
+      );
     }
 
     this.jumbotronTimer += dt;
@@ -1652,6 +2004,7 @@ export class KartGameEngine {
         this.mpBridge.sendState({
           id: playerKart.id,
           characterId: playerKart.spec.id,
+          vehicleId: playerKart.vehicle.id,
           x: playerKart.x,
           y: playerKart.y,
           z: playerKart.z,
@@ -1684,15 +2037,25 @@ export class KartGameEngine {
       rig.root.position.set(kart.x, kart.y + kart.hopY, kart.z);
       rig.root.rotation.y = kart.heading + driftSlip + spinOffset;
 
-      // Enhanced drift roll & body pitch during acceleration/air
-      const targetRoll = -kart.steerVisual * 0.16 - kart.driftDir * 0.08;
+      // Celebratory 360-degree kart spin when an ability is claimed (decoupled from steering!)
+      const claimSpinY =
+        kart.claimSpinTimer > 0
+          ? Math.sin((1 - kart.claimSpinTimer / 0.52) * Math.PI * 0.5) * Math.PI * 2
+          : 0;
+      rig.kartBodyGroup.rotation.y = claimSpinY;
+
+      // Enhanced drift roll (deeper lean for 2-wheel motorcycles/scooters) & acceleration pitch
+      const rollFactor = rig.isTwoWheel ? 0.34 : 0.16;
+      const driftRollFactor = rig.isTwoWheel ? 0.16 : 0.08;
+      const targetRoll = -kart.steerVisual * rollFactor - kart.driftDir * driftRollFactor;
       rig.kartBodyGroup.rotation.z = THREE.MathUtils.damp(
         rig.kartBodyGroup.rotation.z,
         targetRoll,
         10,
         dt
       );
-      const targetPitch = !kart.grounded ? -0.14 : kart.boostTimer > 0 ? -0.05 : 0;
+      const claimPitch = kart.claimSpinTimer > 0 ? -Math.sin((kart.claimSpinTimer / 0.52) * Math.PI) * 0.12 : 0;
+      const targetPitch = (!kart.grounded ? -0.14 : kart.boostTimer > 0 ? -0.05 : 0) + claimPitch;
       rig.kartBodyGroup.rotation.x = THREE.MathUtils.damp(
         rig.kartBodyGroup.rotation.x,
         targetPitch,
@@ -1707,6 +2070,11 @@ export class KartGameEngine {
       rig.wheels.forEach((w) => {
         w.rotation.x = kart.wheelAngle;
       });
+      const boosting = kart.boostTimer > 0 || kart.starTimer > 0;
+      rig.hoverRotors.forEach((r) => {
+        r.rotation.y += dt * (boosting ? 28 : 16);
+      });
+
       rig.driverGroup.rotation.z = THREE.MathUtils.damp(
         rig.driverGroup.rotation.z,
         kart.steerVisual * 0.28 + kart.driftDir * 0.12,
@@ -1714,6 +2082,17 @@ export class KartGameEngine {
         dt
       );
       rig.headGroup.rotation.y = kart.steerVisual * 0.42;
+
+      // Trailing Held Ability Item (banana/shell/mushroom/star) positioned behind kart between twin nitros before deployment!
+      const showHeld = kart.rouletteTimer <= 0 && kart.heldItem !== 'none';
+      rig.heldItemMount.visible = showHeld;
+      if (showHeld) {
+        rig.heldItemMount.position.y = 0.56 + Math.sin(elapsed * 5.2 + kart.aiSeed) * 0.06;
+        rig.heldItemMount.rotation.y = elapsed * 2.2;
+        (['banana', 'shell', 'mushroom', 'star'] as const).forEach((itemKey) => {
+          rig.heldItemMeshes[itemKey].visible = kart.heldItem === itemKey;
+        });
+      }
 
       if (kart.starTimer > 0) {
         this._tmpColor.setHSL((elapsed * 2.5) % 1, 0.95, 0.55);
@@ -1724,10 +2103,9 @@ export class KartGameEngine {
         rig.underglowMat.color.set(kart.spec.neonColor);
       }
 
-      // Dynamic 3D Exhaust Flame Cones + Level-based Nitro Exhaust Jets
-      const boosting = kart.boostTimer > 0 || kart.starTimer > 0;
-      const isLv3 = kart.boostStrength >= 1.46;
-      const isLv2 = kart.boostStrength >= 1.35;
+      // Dynamic 3D Exhaust Flame Cones + Level-based Nitro Exhaust Jets (normalized boost thresholds)
+      const isLv3 = kart.boostStrength >= 1.26;
+      const isLv2 = kart.boostStrength >= 1.20;
       const flameCol =
         kart.starTimer > 0
           ? '#fde047'
@@ -1741,15 +2119,15 @@ export class KartGameEngine {
         cone.visible = boosting;
         if (boosting) {
           const pulse = 0.85 + Math.sin(elapsed * 32 + idx * 1.5) * 0.28;
-          const lengthScale = (isLv3 ? 1.75 : isLv2 ? 1.45 : 1.15) * pulse;
+          const lengthScale = (isLv3 ? 1.85 : isLv2 ? 1.52 : 1.22) * pulse;
           cone.scale.set(pulse, pulse, lengthScale);
           (cone.material as THREE.MeshBasicMaterial).color.set(flameCol);
         }
       });
 
       if (emitEffects && boosting) {
-        const burstCount = isLv3 ? 2 : 1;
-        const flameScale = isLv3 ? 1.55 : isLv2 ? 1.3 : 1.05;
+        const burstCount = isLv3 ? 3 : 2;
+        const flameScale = isLv3 ? 1.65 : isLv2 ? 1.35 : 1.1;
 
         for (let b = 0; b < burstCount; b++) {
           for (const tip of rig.exhaustTips) {
@@ -1758,18 +2136,18 @@ export class KartGameEngine {
               kart.x + this._tmpV3.x,
               kart.y + kart.hopY + this._tmpV3.y,
               kart.z + this._tmpV3.z,
-              -Math.sin(kart.heading) * (6 + b * 2) + (Math.random() - 0.5) * 2.4,
-              1.1 + Math.random() * 1.6,
-              -Math.cos(kart.heading) * (6 + b * 2) + (Math.random() - 0.5) * 2.4,
-              flameCol,
+              -Math.sin(kart.heading) * (5 + b * 2.2) + (Math.random() - 0.5) * 2.6,
+              1.0 + Math.random() * 1.6,
+              -Math.cos(kart.heading) * (5 + b * 2.2) + (Math.random() - 0.5) * 2.6,
+              b === 0 ? '#fef08a' : flameCol,
               flameScale,
-              0.24
+              0.28
             );
           }
         }
       }
 
-      // Drift Sparks, Twin Rear Skid Marks & Continuous 3D Drift/Nitro Ribbon Trails
+      // Drift Sparks, Twin Rear Skid Marks & Continuous 3D Volumetric Drift/Nitro Ribbon Trails
       const driftActive = emitEffects && kart.driftDir !== 0 && kart.grounded;
       const driftCol =
         kart.driftLevel === 3
@@ -1781,21 +2159,21 @@ export class KartGameEngine {
           : '#7dd3fc';
 
       if (driftActive) {
-        if (Math.random() < 0.65) {
+        if (Math.random() < 0.72) {
           this.spawnSkidMark(kart.x, kart.y, kart.z, rig.root.rotation.y);
         }
-        const sparkCount = kart.driftLevel >= 2 ? 2 : 1;
+        const sparkCount = kart.driftLevel >= 2 ? 3 : 2;
         for (let s = 0; s < sparkCount; s++) {
           this.spawnParticle(
-            kart.x - Math.sin(kart.heading) * 1.0 + (Math.random() - 0.5) * 0.8,
-            kart.y + 0.24,
-            kart.z - Math.cos(kart.heading) * 1.0 + (Math.random() - 0.5) * 0.8,
-            (Math.random() - 0.5) * 7,
-            2.4 + Math.random() * 2.8,
-            (Math.random() - 0.5) * 7,
-            driftCol,
-            0.65 + kart.driftLevel * 0.28,
-            0.27
+            kart.x - Math.sin(kart.heading) * 1.0 + (Math.random() - 0.5) * 0.9,
+            kart.y + 0.25,
+            kart.z - Math.cos(kart.heading) * 1.0 + (Math.random() - 0.5) * 0.9,
+            (Math.random() - 0.5) * 7.5,
+            2.6 + Math.random() * 2.8,
+            (Math.random() - 0.5) * 7.5,
+            s === 0 && kart.driftLevel === 0 ? '#e2e8f0' : driftCol,
+            0.75 + kart.driftLevel * 0.3,
+            0.3
           );
         }
       }
@@ -1827,31 +2205,31 @@ export class KartGameEngine {
         }
         trails.wasGrounded = kart.grounded;
 
-        // Rear tire positions for Drift Trails
+        // Rear tire positions for Volumetric Drift Trails
         const tireBack = 0.88;
-        const tireHalf = 0.72;
+        const tireHalf = 0.74;
         trails.driftL.pushPoint(
           driftActive,
           kart.x - fx * tireBack - rx * tireHalf,
-          kart.y + 0.14,
+          kart.y + 0.22,
           kart.z - fz * tireBack - rz * tireHalf,
           rx,
           rz,
           driftCol,
-          0.18 + kart.driftLevel * 0.05
+          0.24 + kart.driftLevel * 0.08
         );
         trails.driftR.pushPoint(
           driftActive,
           kart.x - fx * tireBack + rx * tireHalf,
-          kart.y + 0.14,
+          kart.y + 0.22,
           kart.z - fz * tireBack + rz * tireHalf,
           rx,
           rz,
           driftCol,
-          0.18 + kart.driftLevel * 0.05
+          0.24 + kart.driftLevel * 0.08
         );
 
-        // Exhaust pipe tips for continuous 3D Nitro Trails
+        // Exhaust pipe tips for Volumetric 3D Nitro Trails
         const nitroActive = emitEffects && boosting;
         const tL = rig.exhaustTips[0] ?? this._tmpV3.set(-0.34, 0.74, -1.28);
         const tR = rig.exhaustTips[1] ?? this._tmpV3B.set(0.34, 0.74, -1.28);
@@ -1868,7 +2246,7 @@ export class KartGameEngine {
           rx,
           rz,
           flameCol,
-          isLv3 ? 0.28 : 0.22
+          isLv3 ? 0.4 : isLv2 ? 0.34 : 0.28
         );
         trails.nitroR.pushPoint(
           nitroActive,
@@ -1878,7 +2256,7 @@ export class KartGameEngine {
           rx,
           rz,
           flameCol,
-          isLv3 ? 0.28 : 0.22
+          isLv3 ? 0.4 : isLv2 ? 0.34 : 0.28
         );
       }
     }
@@ -2142,6 +2520,7 @@ export class KartGameEngine {
         id: k.id,
         name: k.name,
         characterId: k.spec.id,
+        vehicleId: k.vehicle.id,
         rank: k.rank,
         lap: Math.min(k.lap, 3),
         finished: k.finished,
@@ -2156,13 +2535,17 @@ export class KartGameEngine {
 
     this.onHudUpdate({
       mode: this.mode,
+      paddockStage: this.paddockStage,
+      selectedVehicleId: this.paddockSelectedVehicleId,
       gameMode: this.gameMode,
       mapId: this.currentMapId,
+      weatherChoice: this.weatherChoice,
+      activeWeather: this.activeWeather,
       controlMode: this.controlMode,
       rank: pk?.rank ?? 1,
       totalRacers: Math.max(1, this.karts.length),
       lap: Math.min(pk?.lap ?? 1, 3),
-      speedKmh: Math.round(Math.abs(pk?.speed ?? 0) * 2.85),
+      speedKmh: Math.round(Math.abs(pk?.speed ?? 0) * 3.1),
       heldItem: pk?.heldItem ?? 'none',
       rouletteActive: (pk?.rouletteTimer ?? 0) > 0,
       driftLevel: pk?.driftLevel ?? 0,
@@ -2292,6 +2675,8 @@ export class KartGameEngine {
       rig.dispose();
     }
     this.paddockRigCache.clear();
+    this.rainLines.geometry.dispose();
+    this.rainMat.dispose();
     this.track.dispose();
     this.textures.dispose();
     this.audio.dispose();

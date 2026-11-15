@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowLeft,
+  ArrowRight,
+  Car,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  CloudRain,
   Copy,
   Eye,
   EyeOff,
@@ -11,11 +17,15 @@ import {
   Map as MapIcon,
   Maximize2,
   Minimize2,
+  Moon,
   Mouse,
   Pause,
   Play,
   RotateCcw,
   Smartphone,
+  Sparkles,
+  Sun,
+  Sunset,
   Timer,
   Trophy,
   Users,
@@ -30,6 +40,7 @@ import { MiniMap } from './components/MiniMap.tsx';
 import { MobileControls } from './components/MobileControls.tsx';
 import { PixelFlagTransition } from './components/PixelFlagTransition.tsx';
 import { SpeedometerGauge } from './components/SpeedometerGauge.tsx';
+import { VehicleCardIcon } from './components/VehicleCardIcon.tsx';
 import { WhiteFlagButtonWave } from './components/WhiteFlagButtonWave.tsx';
 import {
   KartGameEngine,
@@ -37,8 +48,9 @@ import {
   type GameModeType,
   type HudSnapshot,
 } from './game/engine.ts';
-import { MAPS, type MapId } from './game/maps.ts';
+import { MAPS, WEATHER_OPTIONS, type MapId, type WeatherChoice } from './game/maps.ts';
 import { getRacerById, ROSTER, type WeightClass } from './game/roster.ts';
+import { getVehicleById, VEHICLES, type VehicleId } from './game/vehicles.ts';
 import { useMultiplayerRoom } from './hooks/useMultiplayerRoom.ts';
 import type { NetRoomSnapshot } from './shared/protocol.ts';
 
@@ -46,8 +58,12 @@ type FilterTab = 'All' | WeightClass;
 
 const INITIAL_HUD: HudSnapshot = {
   mode: 'title',
+  paddockStage: 'character',
+  selectedVehicleId: 'standard_kart',
   gameMode: 'grand_prix',
   mapId: 'plaza',
+  weatherChoice: 'sunny',
+  activeWeather: 'sunny',
   controlMode: 'keyboard',
   rank: 1,
   totalRacers: 8,
@@ -146,7 +162,10 @@ export default function App() {
 
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [selectedId, setSelectedId] = useState<string>('mario');
+  const [selectedVehicleId, setSelectedVehicleId] = useState<VehicleId>('standard_kart');
+  const [vehiclePage, setVehiclePage] = useState<0 | 1>(0);
   const [selectedMap, setSelectedMap] = useState<MapId>('plaza');
+  const [selectedWeather, setSelectedWeather] = useState<WeatherChoice>('sunny');
   const [weightFilter, setWeightFilter] = useState<FilterTab>('All');
   const [paddockUiVisible, setPaddockUiVisible] = useState<boolean>(true);
   const [muted, setMuted] = useState<boolean>(false);
@@ -176,7 +195,7 @@ export default function App() {
   const pendingFlagActionRef = useRef<
     | {
         type: 'race';
-        remotePlayers: { id: string; name: string; characterId: string; slotIndex: number }[];
+        remotePlayers: { id: string; name: string; characterId: string; vehicleId?: string; slotIndex: number }[];
         gameMode: GameModeType;
       }
     | { type: 'paddock' }
@@ -185,6 +204,21 @@ export default function App() {
   >(null);
 
   const selectedSpec = useMemo(() => getRacerById(selectedId), [selectedId]);
+  const selectedVehicle = useMemo(() => getVehicleById(selectedVehicleId), [selectedVehicleId]);
+  const combinedBars = useMemo(() => {
+    const clampBar = (base100: number, delta: number) =>
+      Math.max(1, Math.min(10, Math.round((base100 + delta) / 10)));
+    return {
+      speed: Math.round((clampBar(selectedSpec.stats.topSpeed, selectedVehicle.deltas.topSpeed) + selectedVehicle.statBars.speed) / 2),
+      acceleration: Math.round((clampBar(selectedSpec.stats.acceleration, selectedVehicle.deltas.acceleration) + selectedVehicle.statBars.acceleration) / 2),
+      weight: Math.round((clampBar(selectedSpec.stats.weight, selectedVehicle.deltas.weight) + selectedVehicle.statBars.weight) / 2),
+      handling: Math.round((clampBar(selectedSpec.stats.handling, selectedVehicle.deltas.handling) + selectedVehicle.statBars.handling) / 2),
+    };
+  }, [selectedSpec, selectedVehicle]);
+  const pagedVehicles = useMemo(
+    () => VEHICLES.filter((v) => v.page === vehiclePage),
+    [vehiclePage]
+  );
   const filteredRoster = useMemo(
     () => (weightFilter === 'All' ? ROSTER : ROSTER.filter((r) => r.weightClass === weightFilter)),
     [weightFilter]
@@ -203,6 +237,7 @@ export default function App() {
           id: p.id,
           name: p.name,
           characterId: p.characterId,
+          vehicleId: p.vehicleId,
           slotIndex: p.slotIndex,
         })),
         gameMode: 'online_room',
@@ -244,9 +279,9 @@ export default function App() {
       const clean = urlRoom.toUpperCase().slice(0, 6);
       setRoomCodeInput(clean);
       engine.setGameMode('online_room');
-      engine.enterPaddock();
+      engine.enterPaddock('character');
       setOnlineModalOpen(true);
-      mp.joinRoom(clean, 'MobileRacer', 'mario');
+      mp.joinRoom(clean, 'MobileRacer', 'mario', 'standard_kart');
     }
 
     return () => {
@@ -346,7 +381,12 @@ export default function App() {
         !mp.room &&
         !onlineModalOpen
       ) {
-        triggerSoloRace();
+        if (hud.paddockStage === 'character') {
+          engineRef.current?.audio.playSelect();
+          engineRef.current?.setPaddockStage('vehicle');
+        } else {
+          triggerSoloRace();
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -371,19 +411,40 @@ export default function App() {
 
         if (left || right || up || down) {
           padNavCooldownRef.current = now;
-          const idx = filteredRoster.findIndex((r) => r.id === selectedId);
-          if (idx >= 0) {
-            let next = idx;
-            if (left) next = (idx - 1 + filteredRoster.length) % filteredRoster.length;
-            if (right) next = (idx + 1) % filteredRoster.length;
-            if (up) next = (idx - 6 + filteredRoster.length) % filteredRoster.length;
-            if (down) next = (idx + 6) % filteredRoster.length;
-            handleSelectCharacter(filteredRoster[next].id);
+          if (hud.paddockStage === 'character') {
+            const idx = filteredRoster.findIndex((r) => r.id === selectedId);
+            if (idx >= 0) {
+              let next = idx;
+              if (left) next = (idx - 1 + filteredRoster.length) % filteredRoster.length;
+              if (right) next = (idx + 1) % filteredRoster.length;
+              if (up) next = (idx - 6 + filteredRoster.length) % filteredRoster.length;
+              if (down) next = (idx + 6) % filteredRoster.length;
+              handleSelectCharacter(filteredRoster[next].id);
+            }
+          } else {
+            const idx = pagedVehicles.findIndex((v) => v.id === selectedVehicleId);
+            const cur = idx >= 0 ? idx : 0;
+            let next = cur;
+            if (left) next = (cur - 1 + pagedVehicles.length) % pagedVehicles.length;
+            if (right) next = (cur + 1) % pagedVehicles.length;
+            if (up) next = (cur - 4 + pagedVehicles.length) % pagedVehicles.length;
+            if (down) next = (cur + 4) % pagedVehicles.length;
+            if (pagedVehicles[next]) handleSelectVehicle(pagedVehicles[next].id);
           }
         } else if (pad.buttons[0]?.pressed) {
-          padNavCooldownRef.current = now + 500;
-          if (mp.connected && localRoomPlayer?.isHost) mp.startRace();
-          else if (!mp.connected) triggerSoloRace();
+          padNavCooldownRef.current = now + 380;
+          if (hud.paddockStage === 'character') {
+            engineRef.current?.audio.playSelect();
+            engineRef.current?.setPaddockStage('vehicle');
+          } else if (mp.connected && localRoomPlayer?.isHost) {
+            mp.startRace();
+          } else if (!mp.connected) {
+            triggerSoloRace();
+          }
+        } else if (pad.buttons[1]?.pressed && hud.paddockStage === 'vehicle') {
+          padNavCooldownRef.current = now + 350;
+          engineRef.current?.audio.playSelect();
+          engineRef.current?.setPaddockStage('character');
         }
       }
       rafId = requestAnimationFrame(pollMenuPad);
@@ -400,9 +461,23 @@ export default function App() {
     }
   };
 
+  const handleSelectVehicle = (vehicleId: VehicleId) => {
+    setSelectedVehicleId(vehicleId);
+    engineRef.current?.selectPaddockVehicle(vehicleId, true);
+    if (mp.connected) {
+      mp.selectVehicle(vehicleId);
+    }
+  };
+
   const handleSelectMap = (mapId: MapId) => {
     setSelectedMap(mapId);
     engineRef.current?.loadMap(mapId);
+    engineRef.current?.audio.playSelect();
+  };
+
+  const handleSelectWeather = (w: WeatherChoice) => {
+    setSelectedWeather(w);
+    engineRef.current?.setWeather(w);
     engineRef.current?.audio.playSelect();
   };
 
@@ -412,12 +487,12 @@ export default function App() {
     engineRef.current?.setGameMode(gm);
     if (gm === 'online_room') {
       transitionToScreen(() => {
-        engineRef.current?.enterPaddock();
+        engineRef.current?.enterPaddock('character');
         setOnlineModalOpen(true);
       });
     } else {
       transitionToScreen(() => {
-        engineRef.current?.enterPaddock();
+        engineRef.current?.enterPaddock('character');
       });
     }
   };
@@ -442,14 +517,14 @@ export default function App() {
   const handleCreateRoom = () => {
     const code = generateRoomCode();
     setRoomCodeInput(code);
-    mp.joinRoom(code, playerName || 'Host', selectedId);
+    mp.joinRoom(code, playerName || 'Host', selectedId, selectedVehicleId);
   };
 
   const handleJoinCode = () => {
     const code = (roomCodeInput || 'MK88').toUpperCase().trim();
     if (!code) return;
     setRoomCodeInput(code);
-    mp.joinRoom(code, playerName || 'Driver', selectedId);
+    mp.joinRoom(code, playerName || 'Driver', selectedId, selectedVehicleId);
   };
 
   const copyRoomInvite = () => {
@@ -469,7 +544,8 @@ export default function App() {
         playerName || 'Driver',
         action.remotePlayers,
         false,
-        action.gameMode
+        action.gameMode,
+        selectedVehicleId
       );
     } else if (action.type === 'paddock') {
       engineRef.current.returnToPaddock();
@@ -477,7 +553,7 @@ export default function App() {
       engineRef.current.returnToTitle();
     }
     pendingFlagActionRef.current = null;
-  }, [selectedId, playerName]);
+  }, [selectedId, selectedVehicleId, playerName]);
 
   const handleFlagComplete = useCallback(() => {
     setFlagActive(false);
@@ -584,35 +660,29 @@ export default function App() {
                 </text>
               </svg>
 
-              {/* Multi-Layered Stylized Typography Logo */}
+              {/* Multi-Layered Mario Kart Font-Pack Typography Logo (Image 3 style with vibrant multi-color outlines) */}
               <div className="flex flex-col leading-none">
                 <div className="flex items-center gap-2 mb-0.5 sm:mb-1">
-                  <span className="font-hud text-[9px] sm:text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
+                  <span className="font-mk text-[10px] sm:text-xs uppercase tracking-[0.22em] text-cyan-300 mk-stroke-sm">
                     ARCADE CHAMPIONSHIP
                   </span>
                 </div>
                 <div className="relative flex flex-col">
                   <h1
-                    className={`font-arcade italic uppercase tracking-tight leading-[0.9] ${
+                    className={`font-mk uppercase tracking-tight leading-[0.95] flex items-baseline gap-2 mk-stroke ${
                       deviceTier === 'mobile'
                         ? 'text-2xl'
                         : deviceTier === 'tablet'
                         ? 'text-4xl'
                         : 'text-5xl lg:text-6xl'
                     }`}
-                    style={{
-                      backgroundImage: 'linear-gradient(180deg, #ffffff 15%, #e2e8f0 55%, #38bdf8 100%)',
-                      WebkitBackgroundClip: 'text',
-                      color: 'transparent',
-                      WebkitTextStroke: deviceTier === 'mobile' ? '1px #0f172a' : '1.5px #0f172a',
-                      filter: 'drop-shadow(0 4px 0 #090d16) drop-shadow(0 8px 18px rgba(14,165,233,0.45))',
-                    }}
                   >
-                    MARIO KART
+                    <span className="text-rose-500">MARIO</span>
+                    <span className="text-sky-300">KART</span>
                   </h1>
                   <div className="flex items-center gap-1.5 mt-0.5 sm:mt-1">
                     <span
-                      className={`font-arcade italic uppercase tracking-[0.14em] px-2.5 sm:px-3.5 py-0.5 rounded-md border border-amber-200/80 shadow-lg ${
+                      className={`font-mk italic uppercase tracking-[0.14em] px-2.5 sm:px-3.5 py-0.5 rounded-md border-2 border-white shadow-lg mk-stroke-sm ${
                         deviceTier === 'mobile'
                           ? 'text-xs'
                           : deviceTier === 'tablet'
@@ -621,7 +691,7 @@ export default function App() {
                       }`}
                       style={{
                         background: 'linear-gradient(90deg, #facc15 0%, #f97316 55%, #ef4444 100%)',
-                        color: '#090d16',
+                        color: '#fef08a',
                         transform: 'skewX(-12deg)',
                       }}
                     >
@@ -707,18 +777,15 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Label */}
+                  {/* Label in Mario Kart Outlined Font Pack */}
                   <div className="relative z-10 flex-1" style={{ transform: 'skewX(10deg)' }}>
                     <div
-                      className={`font-arcade italic uppercase tracking-wide transition-colors ${
+                      className={`font-mk uppercase tracking-wide transition-colors ${
                         deviceTier === 'mobile'
                           ? 'text-base'
                           : 'text-lg sm:text-xl md:text-2xl'
-                      } ${
-                        isActive
-                          ? 'text-slate-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]'
-                          : 'text-white'
-                      }`}
+                      } ${isActive ? 'text-slate-950' : 'mk-stroke-sm'}`}
+                      style={{ color: isActive ? '#090d16' : m.accent }}
                     >
                       {m.label}
                     </div>
@@ -730,11 +797,11 @@ export default function App() {
 
           {/* Bottom Bar: MADE BY SHRITIZ Credit + Mode Description */}
           <div className="flex flex-wrap items-end justify-between gap-2 sm:gap-4">
-            <div className="font-arcade italic uppercase tracking-[0.22em] text-xs sm:text-sm md:text-base text-amber-300 drop-shadow-[0_3px_8px_rgba(0,0,0,0.95)]">
-              MADE BY SHRITIZ
+            <div className="font-mk uppercase tracking-[0.2em] text-xs sm:text-sm md:text-base text-amber-300 mk-stroke-sm">
+              MADE BY <span className="text-cyan-300">SHRITIZ</span>
             </div>
             <div
-              className="hidden sm:block rounded-xl border border-white/20 px-3.5 py-1.5 font-hud text-xs md:text-sm font-bold italic tracking-wide shadow-xl"
+              className="hidden sm:block rounded-xl border border-white/25 px-3.5 py-1.5 font-mk text-xs md:text-sm tracking-wide shadow-xl mk-stroke-sm"
               style={{ backgroundColor: 'rgba(10, 15, 28, 0.78)', color: activeTitleMeta.accent }}
             >
               {activeTitleMeta.desc}
@@ -743,24 +810,29 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== 2. CHARACTER & MAP PADDOCK SCREEN ==================== */}
+      {/* ==================== 2. CHARACTER & VEHICLE SELECTION PADDOCK ==================== */}
       {hud.mode === 'paddock' && (
-        <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 md:p-5">
-          {/* Top Bar */}
+        <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between p-2.5 sm:p-3 md:p-5">
+          {/* Transparent Floating Top Bar */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="pointer-events-auto flex items-center gap-2">
               <button
-                onClick={handleReturnToTitle}
-                className="px-3 py-2 rounded-xl border border-white/25 hover:border-white/60 text-xs font-black uppercase tracking-wider cursor-pointer"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)' }}
+                onClick={
+                  hud.paddockStage === 'vehicle'
+                    ? () => engineRef.current?.setPaddockStage('character')
+                    : handleReturnToTitle
+                }
+                className="px-3 py-1.5 sm:py-2 rounded-xl border border-white/35 hover:border-white/75 font-mk text-xs uppercase tracking-wider text-sky-200 mk-stroke-sm cursor-pointer"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.35)' }}
               >
-                ← Title
+                {hud.paddockStage === 'vehicle' ? '← Characters' : '← Title'}
               </button>
+
               <div
-                className="rounded-xl border border-white/25 px-3.5 py-2 shadow-xl flex items-center gap-2.5"
-                style={{ backgroundColor: 'rgba(12, 74, 110, 0.86)' }}
+                className="rounded-xl border border-white/25 px-3 py-1.5 flex items-center gap-2"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.28)' }}
               >
-                <span className="text-xs md:text-sm font-black uppercase tracking-wider text-amber-300">
+                <span className="font-mk text-xs sm:text-sm uppercase tracking-wider text-amber-300 mk-stroke-sm">
                   {hud.gameMode === 'time_trial'
                     ? 'Time Trials'
                     : hud.gameMode === 'vs_race'
@@ -770,21 +842,21 @@ export default function App() {
                     : 'Grand Prix'}
                 </span>
                 <span className="text-white/40">·</span>
-                <span className="text-[11px] font-bold text-sky-100">
-                  {hud.gamepadConnected ? 'Controller Ready' : 'Select Driver & Course'}
+                <span className="font-mk text-[11px] sm:text-xs text-emerald-300 mk-stroke-sm">
+                  {hud.paddockStage === 'character' ? '1. Pick Driver' : '2. Pick Vehicle & Course'}
                 </span>
               </div>
             </div>
 
-            <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+            <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
               <button
                 onClick={() => setOnlineModalOpen(true)}
-                className={`px-3 py-2 rounded-xl border text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer ${
+                className={`px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border font-mk text-xs uppercase tracking-wider flex items-center gap-1.5 cursor-pointer mk-stroke-sm ${
                   mp.connected
-                    ? 'border-emerald-300/70 bg-emerald-500/20 text-emerald-200'
-                    : 'border-white/25 hover:border-white/60 text-sky-200'
+                    ? 'border-emerald-300/70 text-emerald-300'
+                    : 'border-white/30 hover:border-white/70 text-cyan-200'
                 }`}
-                style={{ backgroundColor: mp.connected ? 'rgba(6, 78, 59, 0.85)' : 'rgba(10, 15, 28, 0.85)' }}
+                style={{ backgroundColor: mp.connected ? 'rgba(6, 78, 59, 0.5)' : 'rgba(10, 15, 28, 0.3)' }}
               >
                 <Wifi className="w-3.5 h-3.5" />
                 <span>{mp.connected ? `Room ${mp.room?.roomCode} (${mp.room?.players.length ?? 1}/8)` : 'Online Room'}</span>
@@ -793,8 +865,8 @@ export default function App() {
               <button
                 onClick={enterLandscapeFullscreen}
                 title="Landscape Fullscreen"
-                className="p-2 rounded-xl border border-white/25 hover:border-white/60 transition cursor-pointer"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)' }}
+                className="p-2 rounded-xl border border-white/30 hover:border-white/70 transition cursor-pointer"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.3)' }}
               >
                 {isFullscreen ? (
                   <Minimize2 className="w-4 h-4 text-sky-300" />
@@ -805,9 +877,9 @@ export default function App() {
 
               <button
                 onClick={() => setPaddockUiVisible((v) => !v)}
-                title="Toggle Character Grid (H)"
-                className="p-2 rounded-xl border border-white/25 hover:border-white/60 transition cursor-pointer"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)' }}
+                title="Toggle Selection UI (H)"
+                className="p-2 rounded-xl border border-white/30 hover:border-white/70 transition cursor-pointer"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.3)' }}
               >
                 {paddockUiVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4 text-amber-300" />}
               </button>
@@ -815,8 +887,8 @@ export default function App() {
               <button
                 onClick={toggleMute}
                 title={muted ? 'Unmute Audio' : 'Mute Audio'}
-                className="p-2 rounded-xl border border-white/25 hover:border-white/60 transition cursor-pointer"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)' }}
+                className="p-2 rounded-xl border border-white/30 hover:border-white/70 transition cursor-pointer"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.3)' }}
               >
                 {muted ? (
                   <VolumeX className="w-4 h-4 text-rose-400" />
@@ -827,14 +899,14 @@ export default function App() {
             </div>
           </div>
 
-          {/* Middle Section: Transparent Floating Character + Minimal Stats + Map Selector */}
-          {paddockUiVisible && (
-            <div className="my-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-2 min-h-0">
+          {/* ===== STAGE 1: TRANSPARENT FLOATING CHARACTER SELECTION ===== */}
+          {paddockUiVisible && hud.paddockStage === 'character' && (
+            <div className="my-auto flex flex-col md:flex-row items-center md:items-center justify-end md:justify-between gap-2 min-h-0 flex-1 py-1">
               <div
                 className={`pointer-events-auto w-full overflow-y-auto pr-1 space-y-2 ${
                   deviceTier === 'mobile'
-                    ? 'max-w-[340px] max-h-[calc(100vh-112px)]'
-                    : 'md:w-[430px] lg:w-[460px] max-h-[calc(100vh-124px)]'
+                    ? 'mt-auto max-w-[360px] max-h-[44vh]'
+                    : 'md:w-[445px] lg:w-[475px] max-h-[calc(100vh-145px)]'
                 }`}
               >
                 {/* Floating Weight Class Filter Tabs */}
@@ -844,27 +916,22 @@ export default function App() {
                       <button
                         key={tab}
                         onClick={() => setWeightFilter(tab)}
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-hud font-bold uppercase tracking-wider transition cursor-pointer ${
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-mk uppercase tracking-wider border transition cursor-pointer ${
                           weightFilter === tab
-                            ? 'bg-amber-400 text-slate-950 shadow-md'
-                            : 'text-white/90 hover:bg-white/15 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]'
+                            ? 'bg-amber-400 border-amber-200 text-slate-950 shadow-md'
+                            : 'bg-slate-950/35 border-white/25 text-cyan-200 hover:border-white/60 mk-stroke-sm'
                         }`}
-                        style={
-                          weightFilter !== tab
-                            ? { backgroundColor: 'rgba(8, 15, 32, 0.36)' }
-                            : undefined
-                        }
                       >
                         {tab}
                       </button>
                     ))}
                   </div>
-                  <span className="font-hud text-[10px] font-bold uppercase tracking-wider text-amber-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
+                  <span className="font-mk text-[11px] uppercase tracking-wider text-amber-300 mk-stroke-sm">
                     {selectedSpec.weightClass}
                   </span>
                 </div>
 
-                {/* Transparent Floating 6-Column Portrait Grid */}
+                {/* Truly Transparent Floating 6-Column Portrait Grid */}
                 <div className="grid grid-cols-6 gap-1.5">
                   {filteredRoster.map((racer) => {
                     const active = racer.id === selectedId;
@@ -873,37 +940,31 @@ export default function App() {
                         key={racer.id}
                         onClick={() => handleSelectCharacter(racer.id)}
                         title={`${racer.name} (${racer.weightClass})`}
-                        className={`relative aspect-square rounded-xl flex items-center justify-center p-1 transition cursor-pointer overflow-hidden ${
-                          active ? 'scale-105' : 'hover:scale-105'
+                        className={`relative aspect-square rounded-xl border flex items-center justify-center p-1 transition cursor-pointer overflow-hidden ${
+                          active
+                            ? 'scale-105 border-amber-300 bg-white/18 shadow-[0_0_14px_rgba(250,204,21,0.75)]'
+                            : 'border-white/20 bg-slate-950/20 hover:bg-white/10 hover:border-white/55 hover:scale-105'
                         }`}
-                        style={{
-                          backgroundColor: active
-                            ? 'rgba(56, 189, 248, 0.28)'
-                            : 'rgba(8, 15, 32, 0.24)',
-                        }}
                       >
                         <WhiteFlagButtonWave active={active} compact />
-                        <div className="relative z-10">
-                          <CharacterPortrait spec={racer} size={isCompactViewport ? 32 : 42} />
+                        <div className="relative z-10 drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
+                          <CharacterPortrait spec={racer} size={isCompactViewport ? 30 : 42} />
                         </div>
-                        {active && (
-                          <span className="pointer-events-none absolute inset-0 rounded-xl border-2 border-amber-300 shadow-[0_0_12px_rgba(250,204,21,0.85)]" />
-                        )}
                       </button>
                     );
                   })}
                 </div>
 
-                {/* Minimal Inline Character Stats Strip */}
+                {/* Minimal Transparent Character Name + Stat Bars */}
                 <div
-                  className="rounded-xl px-2.5 py-1.5 border border-white/15 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 shadow-lg"
-                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.42)' }}
+                  className="rounded-xl px-3 py-2 border border-white/25 flex flex-wrap items-center justify-between gap-x-3 gap-y-1"
+                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.28)' }}
                 >
                   <div className="flex items-baseline gap-2 min-w-0">
-                    <span className="font-arcade text-xs sm:text-sm uppercase tracking-wide text-amber-300 truncate">
+                    <span className="font-mk text-sm sm:text-base uppercase tracking-wide text-amber-300 mk-stroke-sm truncate">
                       {selectedSpec.name}
                     </span>
-                    <span className="text-[10px] text-sky-200/90 font-semibold truncate">
+                    <span className="font-mk text-[10px] text-rose-300 mk-stroke-sm truncate">
                       {selectedSpec.title}
                     </span>
                   </div>
@@ -915,8 +976,8 @@ export default function App() {
                       { label: 'WGT', val: selectedSpec.stats.weight, col: '#facc15' },
                     ].map((st) => (
                       <div key={st.label} className="flex items-center gap-1 text-[9px] font-hud">
-                        <span className="font-bold text-slate-300">{st.label}</span>
-                        <div className="w-8 sm:w-10 h-1 rounded-full bg-slate-900/80 overflow-hidden">
+                        <span className="font-bold text-white/95">{st.label}</span>
+                        <div className="w-8 sm:w-10 h-1.5 rounded-full bg-black/50 overflow-hidden">
                           <div
                             className="h-full rounded-full transition-all duration-300"
                             style={{ width: `${st.val}%`, backgroundColor: st.col }}
@@ -926,8 +987,126 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+              </div>
 
-                {/* Transparent Floating Course / Map Strip */}
+              {/* Right Showcase Nameplate (Desktop shows beside centered-right 3D kart) */}
+              <div className="hidden md:flex flex-col items-end justify-end self-stretch pb-4 pr-2">
+                <div
+                  className="px-4 py-1.5 mb-2 font-mk text-xl uppercase tracking-wider text-slate-950 shadow-xl border-2 border-white"
+                  style={{
+                    background: 'linear-gradient(90deg, #facc15, #fde047)',
+                    clipPath: 'polygon(6% 0%, 100% 0%, 94% 100%, 0% 100%)',
+                  }}
+                >
+                  Characters
+                </div>
+                <div className="flex-1" />
+                <div
+                  className="px-6 py-2 rounded-2xl border border-white/25 font-mk text-xl uppercase tracking-wide text-amber-300 mk-stroke-sm"
+                  style={{ backgroundColor: 'rgba(15, 23, 42, 0.72)' }}
+                >
+                  {selectedSpec.name} <span className="text-sky-300 text-sm">· {selectedVehicle.name}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ===== STAGE 2: VEHICLE GARAGE SELECTION (MATCHING REFERENCE IMAGE 1) ===== */}
+          {paddockUiVisible && hud.paddockStage === 'vehicle' && (
+            <div className="my-auto flex flex-col md:flex-row items-center md:items-stretch justify-end md:justify-between gap-3 min-h-0 flex-1 py-1">
+              {/* LEFT: 4-Column Vehicle Grid with Rounded Golden Corner Brackets & Page Arrows */}
+              <div
+                className={`pointer-events-auto flex flex-col justify-center gap-2 ${
+                  deviceTier === 'mobile'
+                    ? 'mt-auto w-full max-w-[390px] max-h-[46vh] overflow-y-auto'
+                    : 'w-full md:w-[54%] max-w-[560px]'
+                }`}
+              >
+                {/* Mobile Compact Selected Vehicle Nameplate + Mini Stat Bars */}
+                <div
+                  className="md:hidden rounded-xl px-2.5 py-1.5 border border-white/25 flex items-center justify-between gap-2"
+                  style={{ backgroundColor: 'rgba(10, 16, 34, 0.52)' }}
+                >
+                  <div className="min-w-0">
+                    <div className="font-mk text-xs uppercase text-amber-300 mk-stroke-sm truncate">
+                      {selectedVehicle.name}
+                    </div>
+                    <div className="font-mk text-[9px] uppercase text-cyan-300 truncate">
+                      {selectedVehicle.category}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0 text-[8px] font-hud text-white">
+                    <span>SPD {combinedBars.speed}</span>
+                    <span>ACC {combinedBars.acceleration}</span>
+                    <span>WGT {combinedBars.weight}</span>
+                    <span>HND {combinedBars.handling}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setVehiclePage((p) => (p === 0 ? 1 : 0))}
+                    title="Previous Vehicle Page"
+                    className="shrink-0 w-7 h-10 rounded-xl bg-amber-400 hover:bg-amber-300 border-2 border-white text-slate-950 flex items-center justify-center shadow-lg cursor-pointer"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+
+                  <div className="grid grid-cols-4 gap-1.5 sm:gap-2 flex-1">
+                    {pagedVehicles.map((veh) => {
+                      const active = veh.id === selectedVehicleId;
+                      return (
+                        <button
+                          key={veh.id}
+                          onClick={() => handleSelectVehicle(veh.id)}
+                          title={`${veh.name} (${veh.category})`}
+                          className={`relative aspect-[1.45/1] rounded-2xl border-2 flex flex-col items-center justify-center p-1 transition cursor-pointer ${
+                            active
+                              ? 'scale-[1.04] border-amber-300 bg-sky-500/25 shadow-[0_0_18px_rgba(250,204,21,0.7)]'
+                              : 'border-white/25 bg-slate-950/35 hover:bg-white/10 hover:border-white/60'
+                          }`}
+                        >
+                          {/* Reference Image 1 Curved Golden Corner Brackets on Active Tile */}
+                          {active && (
+                            <>
+                              <span className="pointer-events-none absolute -top-1 -left-1 w-3.5 h-3.5 border-t-[4px] border-l-[4px] border-amber-300 rounded-tl-xl" />
+                              <span className="pointer-events-none absolute -top-1 -right-1 w-3.5 h-3.5 border-t-[4px] border-r-[4px] border-amber-300 rounded-tr-xl" />
+                              <span className="pointer-events-none absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-[4px] border-l-[4px] border-amber-300 rounded-bl-xl" />
+                              <span className="pointer-events-none absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-[4px] border-r-[4px] border-amber-300 rounded-br-xl" />
+                            </>
+                          )}
+                          <VehicleCardIcon
+                            vehicle={veh}
+                            size={deviceTier === 'mobile' ? 48 : deviceTier === 'tablet' ? 62 : 76}
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    onClick={() => setVehiclePage((p) => (p === 0 ? 1 : 0))}
+                    title="Next Vehicle Page"
+                    className="shrink-0 w-7 h-10 rounded-xl bg-amber-400 hover:bg-amber-300 border-2 border-white text-slate-950 flex items-center justify-center shadow-lg cursor-pointer"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Pagination Dots */}
+                <div className="flex items-center justify-center gap-2">
+                  {([0, 1] as const).map((pg) => (
+                    <button
+                      key={pg}
+                      onClick={() => setVehiclePage(pg)}
+                      className={`w-2.5 h-2.5 rounded-full transition cursor-pointer ${
+                        vehiclePage === pg ? 'bg-amber-300 scale-125' : 'bg-slate-900/60 border border-white/40'
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                {/* Course & Dynamic Weather Selectors */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                   {MAPS.map((m) => {
                     const active = selectedMap === m.id;
@@ -935,42 +1114,118 @@ export default function App() {
                       <button
                         key={m.id}
                         onClick={() => handleSelectMap(m.id)}
-                        className={`relative overflow-hidden px-2 py-1.5 rounded-xl border text-left transition cursor-pointer ${
+                        className={`px-2 py-1.5 rounded-xl border text-left transition cursor-pointer ${
                           active
-                            ? 'border-amber-300 shadow-[0_0_12px_rgba(250,204,21,0.4)]'
-                            : 'border-white/20 hover:border-white/45'
+                            ? 'border-amber-300 bg-white/18 shadow-[0_0_12px_rgba(250,204,21,0.45)]'
+                            : 'border-white/25 bg-slate-950/30 hover:bg-white/10 hover:border-white/55'
                         }`}
-                        style={{
-                          backgroundColor: active
-                            ? 'rgba(14, 165, 233, 0.34)'
-                            : 'rgba(8, 15, 32, 0.34)',
-                        }}
                       >
-                        <div className="flex items-center gap-1 text-[10px] font-hud font-bold uppercase tracking-tight text-white truncate">
+                        <div className="flex items-center gap-1 text-[10px] font-mk uppercase tracking-tight text-cyan-200 mk-stroke-sm truncate">
                           <MapIcon className="w-2.5 h-2.5 text-amber-300 shrink-0" />
                           <span className="truncate">
                             {m.name.split(' ')[0]} {m.name.split(' ')[1]}
                           </span>
                         </div>
-                        <div className="text-[9px] text-sky-200/85 truncate">{m.theme}</div>
+                        <div className="text-[9px] text-white/85 truncate">{m.theme}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1">
+                  {WEATHER_OPTIONS.map((w) => {
+                    const active = selectedWeather === w.id;
+                    return (
+                      <button
+                        key={w.id}
+                        onClick={() => handleSelectWeather(w.id)}
+                        className={`px-2 py-1 rounded-lg border text-[10px] font-mk uppercase tracking-wider flex items-center gap-1 transition cursor-pointer mk-stroke-sm ${
+                          active
+                            ? 'border-white bg-white/25 text-white shadow'
+                            : 'border-white/20 bg-slate-950/25 text-white/85 hover:bg-white/10'
+                        }`}
+                      >
+                        <span style={{ color: w.accent }}>
+                          {w.id === 'sunny' && <Sun className="w-3 h-3" />}
+                          {w.id === 'sunset' && <Sunset className="w-3 h-3" />}
+                          {w.id === 'rainy' && <CloudRain className="w-3 h-3" />}
+                          {w.id === 'night' && <Moon className="w-3 h-3" />}
+                          {w.id === 'dynamic' && <Sparkles className="w-3 h-3" />}
+                        </span>
+                        <span>{w.label}</span>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="hidden md:block flex-1" />
+              {/* RIGHT: Yellow "Vehicles" Banner + 4 Golden Stat Bars + Open 3D Showcase + Dark Vehicle Nameplate (Image 1) */}
+              <div className="hidden md:flex flex-col items-end justify-between w-[42%] max-w-[390px] py-1">
+                <div className="flex flex-col items-end gap-2 w-full">
+                  <div
+                    className="px-6 py-1.5 font-mk text-xl uppercase tracking-wider text-slate-950 shadow-xl border-2 border-white"
+                    style={{
+                      background: 'linear-gradient(90deg, #facc15, #fde047)',
+                      clipPath: 'polygon(6% 0%, 100% 0%, 94% 100%, 0% 100%)',
+                    }}
+                  >
+                    Vehicles
+                  </div>
+
+                  {/* Translucent 10-Segment Golden Stat Bars */}
+                  <div
+                    className="w-full rounded-2xl border border-white/25 p-3 space-y-1.5 shadow-xl"
+                    style={{ backgroundColor: 'rgba(15, 23, 42, 0.56)' }}
+                  >
+                    {[
+                      { label: 'Speed', val: combinedBars.speed },
+                      { label: 'Acceleration', val: combinedBars.acceleration },
+                      { label: 'Weight', val: combinedBars.weight },
+                      { label: 'Handling', val: combinedBars.handling },
+                    ].map((row) => (
+                      <div key={row.label} className="space-y-0.5">
+                        <div className="font-mk text-xs italic text-white mk-stroke-sm">
+                          {row.label}
+                        </div>
+                        <div className="grid grid-cols-10 gap-0.5 h-2 rounded bg-slate-950/75 p-0.5">
+                          {Array.from({ length: 10 }).map((_, seg) => (
+                            <div
+                              key={seg}
+                              className={`rounded-sm transition-colors duration-200 ${
+                                seg < row.val ? 'bg-amber-300' : 'bg-white/10'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Vehicle Nameplate at Bottom Right below Rotating 3D Model */}
+                <div
+                  className="pointer-events-auto px-6 py-2 rounded-2xl border-2 border-white/30 text-center shadow-2xl"
+                  style={{ backgroundColor: 'rgba(15, 23, 42, 0.78)' }}
+                >
+                  <div className="font-mk text-2xl italic uppercase tracking-wide text-amber-300 mk-stroke-sm">
+                    {selectedVehicle.name}
+                  </div>
+                  <div className="font-mk text-[11px] uppercase tracking-widest text-cyan-300 mk-stroke-sm">
+                    {selectedVehicle.category} · {selectedSpec.name}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
-          {/* Bottom Bar: Exclusive Single-Active Control Mode + OK Start Race Button */}
+          {/* Transparent Bottom Bar: Exclusive Single-Active Control Mode + Stage Next / OK Start Button */}
           <div className="pointer-events-auto flex flex-wrap items-center justify-between gap-2">
             <div
-              className="rounded-2xl border border-white/20 px-3 py-2 flex flex-wrap items-center gap-1.5 shadow-xl"
-              style={{ backgroundColor: 'rgba(10, 15, 28, 0.88)' }}
+              className="rounded-2xl border border-white/25 px-2.5 sm:px-3 py-1.5 sm:py-2 flex flex-wrap items-center gap-1 sm:gap-1.5 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
+              style={{ backgroundColor: 'rgba(10, 15, 28, 0.35)' }}
             >
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">
-                Input (Exclusive):
+              <span className="font-mk text-[10px] uppercase tracking-wider text-amber-300 mr-1 mk-stroke-sm">
+                Input:
               </span>
               {(
                 [
@@ -984,10 +1239,10 @@ export default function App() {
                 <button
                   key={opt.id}
                   onClick={() => setControlMode(opt.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase flex items-center gap-1 cursor-pointer transition ${
+                  className={`px-2 py-1 rounded-lg border text-[10px] font-bold uppercase flex items-center gap-1 cursor-pointer transition ${
                     controlMode === opt.id
-                      ? 'bg-sky-400 text-slate-950 shadow'
-                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      ? 'bg-sky-400 border-sky-200 text-slate-950 shadow'
+                      : 'bg-transparent border-white/20 text-white hover:bg-white/10'
                   }`}
                 >
                   {opt.icon}
@@ -996,31 +1251,56 @@ export default function App() {
               ))}
               <button
                 onClick={() => setAutoAccel((v) => !v)}
-                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase cursor-pointer ml-1 ${
-                  autoAccel ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-300'
+                className={`px-2 py-1 rounded-lg border text-[10px] font-bold uppercase cursor-pointer ml-0.5 ${
+                  autoAccel
+                    ? 'bg-emerald-400 border-emerald-200 text-slate-950'
+                    : 'bg-transparent border-white/20 text-white hover:bg-white/10'
                 }`}
               >
                 Auto-Gas
               </button>
             </div>
 
-            <button
-              onClick={mp.connected ? () => mp.startRace() : triggerSoloRace}
-              disabled={mp.connected && !localRoomPlayer?.isHost}
-              className="group relative overflow-hidden px-6 py-3 rounded-2xl border-2 border-amber-300 bg-slate-900 hover:text-slate-950 disabled:opacity-50 font-black text-sm md:text-base uppercase tracking-wider shadow-2xl flex items-center gap-2.5 transition cursor-pointer"
-            >
-              <WhiteFlagButtonWave active />
-              <span className="relative z-10 w-6 h-6 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-xs font-black">
-                A
-              </span>
-              <span className="relative z-10 text-slate-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.8)]">
-                {mp.connected
-                  ? localRoomPlayer?.isHost
-                    ? 'OK · Launch MP'
-                    : 'Waiting Host'
-                  : 'OK · Start Race'}
-              </span>
-            </button>
+            <div className="flex items-center gap-2 ml-auto">
+              {hud.paddockStage === 'character' ? (
+                <button
+                  onClick={() => engineRef.current?.setPaddockStage('vehicle')}
+                  className="group relative overflow-hidden px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl border-2 border-amber-300 bg-slate-900/80 font-mk text-sm md:text-base uppercase tracking-wider shadow-2xl flex items-center gap-2 transition cursor-pointer"
+                >
+                  <WhiteFlagButtonWave active />
+                  <Car className="relative z-10 w-4 h-4 text-slate-950" />
+                  <span className="relative z-10 text-slate-950">Next: Vehicles</span>
+                  <ArrowRight className="relative z-10 w-4 h-4 text-slate-950" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => engineRef.current?.setPaddockStage('character')}
+                    className="px-3.5 py-2.5 rounded-2xl border border-white/30 bg-slate-900/65 hover:bg-slate-800/80 font-mk text-xs uppercase tracking-wider text-cyan-200 mk-stroke-sm flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Drivers</span>
+                  </button>
+                  <button
+                    onClick={mp.connected ? () => mp.startRace() : triggerSoloRace}
+                    disabled={mp.connected && !localRoomPlayer?.isHost}
+                    className="group relative overflow-hidden px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl border-2 border-amber-300 bg-slate-900/75 disabled:opacity-50 font-mk text-sm md:text-base uppercase tracking-wider shadow-2xl flex items-center gap-2.5 transition cursor-pointer"
+                  >
+                    <WhiteFlagButtonWave active />
+                    <span className="relative z-10 w-6 h-6 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-xs font-black">
+                      A
+                    </span>
+                    <span className="relative z-10 text-slate-950">
+                      {mp.connected
+                        ? localRoomPlayer?.isHost
+                          ? 'OK · Launch MP'
+                          : 'Waiting Host'
+                        : 'OK · Start Race'}
+                    </span>
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1184,16 +1464,16 @@ export default function App() {
                       style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                     >
                       <span
-                        className={`font-arcade italic tracking-tighter text-amber-300 tabular-nums ${
+                        className={`font-mk italic tracking-tighter text-amber-300 tabular-nums mk-stroke ${
                           deviceTier === 'mobile' ? 'text-xl' : 'text-3xl md:text-4xl'
                         }`}
                       >
                         {ord.num}
                       </span>
-                      <span className="text-[10px] sm:text-xs font-black text-amber-400">
+                      <span className="font-mk text-[10px] sm:text-xs text-cyan-300 mk-stroke-sm">
                         {ord.suffix}
                       </span>
-                      <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 ml-1">
+                      <span className="text-[10px] sm:text-[11px] font-bold text-slate-300 ml-1">
                         / {hud.totalRacers}
                       </span>
                     </div>
@@ -1207,13 +1487,17 @@ export default function App() {
                     } ${deviceTier === 'mobile' ? 'px-2 py-1' : 'px-3 py-1.5'}`}
                     style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                   >
-                    <div className="font-hud text-[9px] sm:text-[10px] font-bold uppercase tracking-widest text-sky-300 tabular-nums">
-                      {hud.gameMode === 'time_trial'
-                        ? `LAP ${hud.lap} / ${hud.totalLaps} · TIME LEFT`
-                        : `LAP ${hud.lap} / ${hud.totalLaps}`}
+                    <div className="font-mk text-[10px] sm:text-xs uppercase tracking-widest text-cyan-300 tabular-nums flex items-center gap-1.5 mk-stroke-sm">
+                      <span>
+                        {hud.gameMode === 'time_trial'
+                          ? `LAP ${hud.lap} / ${hud.totalLaps} · TIME LEFT`
+                          : `LAP ${hud.lap} / ${hud.totalLaps}`}
+                      </span>
+                      <span className="text-white/35">·</span>
+                      <span className="text-amber-300">{hud.activeWeather}</span>
                     </div>
                     <div
-                      className={`font-hud font-bold tabular-nums tracking-tight leading-tight ${
+                      className={`font-mk tabular-nums tracking-tight leading-tight mk-stroke-sm ${
                         deviceTier === 'mobile' ? 'text-sm' : 'text-base sm:text-lg'
                       } ${
                         hud.gameMode === 'time_trial'
@@ -1282,7 +1566,11 @@ export default function App() {
             {/* Center Countdown */}
             {hud.mode === 'countdown' && (
               <div className="self-center my-auto text-center">
-                <div className="font-arcade text-7xl md:text-9xl italic tracking-tighter text-amber-300 drop-shadow-[0_6px_24px_rgba(0,0,0,0.85)] tabular-nums">
+                <div
+                  className={`font-mk text-7xl md:text-9xl italic tracking-tighter mk-stroke tabular-nums ${
+                    hud.countdownValue > 0 ? 'text-amber-300' : 'text-emerald-400'
+                  }`}
+                >
                   {hud.countdownValue > 0 ? hud.countdownValue : 'GO!'}
                 </div>
               </div>
@@ -1295,12 +1583,8 @@ export default function App() {
                 className="animate-boost-word self-center mb-24 sm:mb-32 md:mb-36 text-center pointer-events-none"
               >
                 <span
-                  className="font-arcade text-2xl sm:text-3xl md:text-5xl italic uppercase tracking-wider"
-                  style={{
-                    color: hud.boostCallout.color,
-                    textShadow:
-                      '0 3px 0 #090d16, 0 -2px 0 #090d16, 3px 0 0 #090d16, -3px 0 0 #090d16, 0 8px 20px rgba(0,0,0,0.75)',
-                  }}
+                  className="font-mk text-2xl sm:text-3xl md:text-5xl italic uppercase tracking-wider mk-stroke"
+                  style={{ color: hud.boostCallout.color }}
                 >
                   {hud.boostCallout.text}
                 </span>
@@ -1440,27 +1724,27 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== 5. PAUSE & FINISH PODIUM MODAL ==================== */}
+      {/* ==================== 5. LARGER PAUSE & FINISH LEADERBOARD PODIUM MODAL ==================== */}
       {(hud.mode === 'paused' || hud.mode === 'finished') && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center p-4"
+          className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5"
           style={{ backgroundColor: 'rgba(6, 10, 20, 0.84)' }}
         >
           <div
-            className="w-full max-w-lg rounded-3xl border border-white/20 p-6 shadow-2xl space-y-5"
+            className="w-full max-w-2xl md:max-w-3xl rounded-3xl border-2 border-white/25 p-5 sm:p-7 shadow-2xl space-y-5"
             style={{ backgroundColor: '#0f172a' }}
           >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3.5">
                 <Trophy
-                  className={`w-7 h-7 ${
+                  className={`w-9 h-9 sm:w-10 sm:h-10 ${
                     hud.mode === 'finished' && hud.timeTrialResult === 'failed'
                       ? 'text-rose-400'
-                      : 'text-amber-400'
+                      : 'text-amber-300'
                   }`}
                 />
                 <div>
-                  <h2 className="font-arcade text-2xl uppercase tracking-tight">
+                  <h2 className="font-mk text-2xl sm:text-3xl uppercase tracking-tight text-amber-300 mk-stroke-sm">
                     {hud.mode === 'finished'
                       ? hud.gameMode === 'time_trial'
                         ? hud.timeTrialResult === 'failed'
@@ -1469,47 +1753,75 @@ export default function App() {
                         : `Finished ${ord.num}${ord.suffix}!`
                       : 'Race Paused'}
                   </h2>
-                  <p className="text-xs text-slate-400">
+                  <p className="font-mk text-xs sm:text-sm text-cyan-300 mk-stroke-sm">
                     {hud.gameMode === 'time_trial'
                       ? hud.timeTrialResult === 'failed'
                         ? `Reached Lap ${hud.lap}/${hud.totalLaps} · ${formatTime(hud.timeLimitMs)} Limit`
                         : `Cleared ${hud.totalLaps} Laps in ${formatTime(hud.raceTimeMs)} (${formatTime(hud.timeRemainingMs)} left)`
-                      : `Mario Kart Grand Prix · Time ${formatTime(hud.raceTimeMs)}`}
+                      : `Grand Prix Standings · Time ${formatTime(hud.raceTimeMs)}`}
                   </p>
                 </div>
               </div>
-              <Gamepad2 className="w-5 h-5 text-slate-500" />
+              <Gamepad2 className="w-6 h-6 text-slate-500 shrink-0" />
             </div>
 
-            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-              {hud.standings.map((row) => (
-                <div
-                  key={row.id}
-                  className={`flex items-center justify-between px-3 py-2 rounded-xl border text-xs ${
-                    row.isPlayer
-                      ? 'border-amber-400/70 bg-amber-500/15 font-black'
-                      : 'border-white/10 bg-slate-900/80 font-semibold'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-5 text-center font-black tabular-nums text-amber-300">
-                      #{row.rank}
+            <div className="space-y-2 max-h-[46vh] overflow-y-auto pr-1">
+              {hud.standings.map((row) => {
+                const racerSpec = getRacerById(row.characterId);
+                const vehSpec = getVehicleById(row.vehicleId);
+                const medalBadge =
+                  row.rank === 1
+                    ? 'bg-amber-400 text-slate-950 border-amber-200'
+                    : row.rank === 2
+                    ? 'bg-slate-200 text-slate-950 border-white'
+                    : row.rank === 3
+                    ? 'bg-orange-500 text-white border-orange-300'
+                    : 'bg-slate-800 text-amber-300 border-white/15';
+                return (
+                  <div
+                    key={row.id}
+                    className={`flex items-center justify-between px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-2xl border text-sm sm:text-base ${
+                      row.isPlayer
+                        ? 'border-amber-400/80 bg-amber-500/18 shadow-lg'
+                        : 'border-white/10 bg-slate-900/85'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className={`w-8 h-8 rounded-xl border flex items-center justify-center font-mk text-sm tabular-nums shrink-0 ${medalBadge}`}
+                      >
+                        {row.rank}
+                      </span>
+                      <div className="shrink-0">
+                        <CharacterPortrait spec={racerSpec} size={36} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-mk uppercase tracking-wide text-white truncate flex items-center gap-2">
+                          <span style={{ color: row.isPlayer ? '#fde047' : '#ffffff' }}>{row.name}</span>
+                          {row.isPlayer && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 text-[10px] font-black">
+                              YOU
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-bold text-sky-300 truncate">
+                          {vehSpec.name}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="font-mk tabular-nums text-emerald-300 text-sm sm:text-base mk-stroke-sm shrink-0 ml-2">
+                      {row.finished ? formatTime(row.finishTimeMs) : `Lap ${row.lap}/${hud.totalLaps}`}
                     </span>
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: row.color }} />
-                    <span>{row.name}</span>
                   </div>
-                  <span className="tabular-nums text-slate-300">
-                    {row.finished ? formatTime(row.finishTimeMs) : `Lap ${row.lap}/${hud.totalLaps}`}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2.5">
               {hud.mode === 'paused' ? (
                 <button
                   onClick={() => engineRef.current?.setPaused(false)}
-                  className="flex-1 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                  className="flex-1 py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Play className="w-4 h-4" />
                   <span>Resume</span>
@@ -1519,7 +1831,7 @@ export default function App() {
                   {hud.hasReplay && (
                     <button
                       onClick={() => engineRef.current?.startReplay()}
-                      className="flex-1 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                      className="flex-1 py-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Film className="w-4 h-4" />
                       <span>Race Replay</span>
@@ -1527,7 +1839,7 @@ export default function App() {
                   )}
                   <button
                     onClick={triggerSoloRace}
-                    className="flex-1 py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                    className="flex-1 py-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <RotateCcw className="w-4 h-4" />
                     <span>Race Again</span>
@@ -1537,14 +1849,14 @@ export default function App() {
 
               <button
                 onClick={handleReturnToPaddock}
-                className="flex-1 py-3 rounded-xl border border-white/20 bg-slate-800 hover:bg-slate-700 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                className="flex-1 py-3.5 rounded-xl border border-white/25 bg-slate-800 hover:bg-slate-700 text-cyan-200 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>Paddock</span>
               </button>
 
               <button
                 onClick={handleReturnToTitle}
-                className="px-4 py-3 rounded-xl border border-white/15 bg-slate-900 hover:bg-slate-800 text-slate-300 font-black text-xs uppercase tracking-wider cursor-pointer"
+                className="px-5 py-3.5 rounded-xl border border-white/15 bg-slate-900 hover:bg-slate-800 text-rose-300 font-mk text-sm uppercase tracking-wider cursor-pointer"
               >
                 Title
               </button>

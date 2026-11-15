@@ -42,7 +42,7 @@ export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOp
   }, []);
 
   const joinRoom = useCallback(
-    (roomCode: string, playerName: string, characterId: string) => {
+    (roomCode: string, playerName: string, characterId: string, vehicleId = 'standard_kart') => {
       disconnect();
       setError(null);
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -58,6 +58,7 @@ export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOp
             roomCode,
             playerName,
             characterId,
+            vehicleId,
           } satisfies ClientToServerMessage)
         );
       };
@@ -108,6 +109,8 @@ export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOp
     disconnect,
     selectCharacter: (characterId: string) =>
       sendMsg({ type: 'room:selectCharacter', characterId }),
+    selectVehicle: (vehicleId: string) =>
+      sendMsg({ type: 'room:selectVehicle', vehicleId }),
     setReady: (ready: boolean) => sendMsg({ type: 'room:setReady', ready }),
     startRace: () => sendMsg({ type: 'room:startRace' }),
     returnLobby: () => sendMsg({ type: 'room:returnLobby' }),

@@ -1,0 +1,6 @@
+{
+  "name": "Mario Kart Grand Prix",
+  "description": "3D arcade kart racing game with reverse-engineered drift physics, PBR stadium coliseum, full character paddock, and real-time WebSocket multiplayer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

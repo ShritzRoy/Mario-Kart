@@ -57,7 +57,7 @@ export interface TrackHazardObstacle {
 export const TRACK_HALF_WIDTH = 13.0;
 export const KERB_WIDTH = 2.0;
 export const BARRIER_HALF_WIDTH = 16.4;
-export const SAMPLE_COUNT = 480;
+export const SAMPLE_COUNT = 560;
 
 export class StadiumTrack {
   public readonly group = new THREE.Group();
@@ -82,6 +82,8 @@ export class StadiumTrack {
   private searchlights: THREE.Group[] = [];
   private clouds: THREE.Group[] = [];
   private palmCrowns: THREE.Group[] = [];
+  private floatingBalloons: { group: THREE.Group; baseY: number; phase: number }[] = [];
+  private fountainRings: THREE.Mesh[] = [];
   private paddockBackdropTex: THREE.CanvasTexture | null = null;
   private confettiPoints: THREE.Points | null = null;
   private confettiVel: Float32Array = new Float32Array(0);
@@ -101,7 +103,7 @@ export class StadiumTrack {
     this.mapDef = mapDef;
     this.rampTCenters = mapDef.rampTCenters;
 
-    this.curve = new THREE.CatmullRomCurve3(mapDef.controlPoints, true, 'catmullrom', 0.45);
+    this.curve = new THREE.CatmullRomCurve3(mapDef.controlPoints, true, 'centripetal');
     this.sampleCurve();
 
     this.boostPadMat = new THREE.MeshStandardMaterial({
@@ -121,6 +123,7 @@ export class StadiumTrack {
     this.buildGroundAndInfield();
     this.buildSolidRoadAndKerbs();
     this.build3DDividerBoundaries();
+    this.buildTracksideRocksAndCliffs();
     this.buildElevatedSupportsAndRamps();
     this.buildStartFinishGantry();
     this.buildBoostPads();
@@ -131,6 +134,7 @@ export class StadiumTrack {
       this.buildShritizRockArch(0.055, true);
       this.buildShritizRockArch(0.57, true);
       this.buildCoconutPlazaEnvironment();
+      this.buildPlazaFountainAndParasols();
     } else if (mapDef.theme === 'stadium') {
       this.buildStadiumColiseum();
       this.buildTunnelAndTracksideBoards();
@@ -139,10 +143,12 @@ export class StadiumTrack {
     } else if (mapDef.theme === 'sunlit') {
       this.buildShritizRockArch(0.06, false);
       this.buildSunlitCountrysideProps();
+      this.buildHotAirBalloons();
       this.buildTunnelAndTracksideBoards();
     } else {
       this.buildShritizRockArch(0.06, false);
       this.buildSkylineTowersAndProps();
+      this.buildHotAirBalloons();
       this.buildTunnelAndTracksideBoards();
     }
 
@@ -472,26 +478,32 @@ export class StadiumTrack {
   }
 
   private build3DDividerBoundaries(): void {
-    // Solid 3D Extruded Jersey Concrete Dividers + Instanced Guardrail Posts along both sides
+    // Creative Multi-Layer 3D Track Boundaries:
+    // 1) Sculpted concrete Jersey barriers with angled inner faces
+    // 2) Top chrome/metallic tubular safety rails floating above the wall
+    // 3) Glowing directional chevron beacons & 3D tire-barrier stacks on curves
     const segs = SAMPLE_COUNT;
     const divPos: number[] = [];
     const divUV: number[] = [];
     const divIdx: number[] = [];
 
+    const railPos: number[] = [];
+    const railIdx: number[] = [];
+
     const buildSide = (sideSign: -1 | 1) => {
       const startVertex = divPos.length / 3;
+      const railStartVertex = railPos.length / 3;
       for (let i = 0; i <= segs; i++) {
         const s = this.samples[i % segs];
         const v = i / segs;
         const inner = BARRIER_HALF_WIDTH - 0.15;
-        const mid = BARRIER_HALF_WIDTH + 0.25;
-        const outer = BARRIER_HALF_WIDTH + 0.95;
+        const mid = BARRIER_HALF_WIDTH + 0.28;
+        const outer = BARRIER_HALF_WIDTH + 1.05;
 
         const pIn = s.point.clone().addScaledVector(s.right, sideSign * inner);
         const pMid = s.point.clone().addScaledVector(s.right, sideSign * mid);
         const pOut = s.point.clone().addScaledVector(s.right, sideSign * outer);
 
-        // 4 vertices cross section: inner bottom, inner sloped top, outer top, outer bottom
         divPos.push(
           pIn.x, s.point.y, pIn.z,
           pMid.x, s.point.y + 1.45, pMid.z,
@@ -500,6 +512,16 @@ export class StadiumTrack {
         );
         divUV.push(0, v, 0.5, v, 0.8, v, 1, v);
 
+        // Elevated metallic top guardrail tube/beam above barrier
+        const rIn = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.25));
+        const rOut = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.72));
+        railPos.push(
+          rIn.x, s.point.y + 1.98, rIn.z,
+          rOut.x, s.point.y + 1.98, rOut.z,
+          rOut.x, s.point.y + 1.72, rOut.z,
+          rIn.x, s.point.y + 1.72, rIn.z
+        );
+
         if (i < segs) {
           const b = startVertex + i * 4;
           const n = b + 4;
@@ -507,6 +529,15 @@ export class StadiumTrack {
             b, b + 1, n, b + 1, n + 1, n,
             b + 1, b + 2, n + 1, b + 2, n + 2, n + 1,
             b + 2, b + 3, n + 2, b + 3, n + 3, n + 2
+          );
+
+          const rb = railStartVertex + i * 4;
+          const rn = rb + 4;
+          railIdx.push(
+            rb, rb + 1, rn, rb + 1, rn + 1, rn,
+            rb + 1, rb + 2, rn + 1, rb + 2, rn + 2, rn + 1,
+            rb + 2, rb + 3, rn + 2, rb + 3, rn + 3, rn + 2,
+            rb + 3, rb, rn + 3, rb, rn, rn + 3
           );
         }
       }
@@ -525,7 +556,7 @@ export class StadiumTrack {
       map: this.textures.dividerStripeMap,
       color: '#ffffff',
       roughness: 0.45,
-      metalness: 0.18,
+      metalness: 0.2,
       side: THREE.DoubleSide,
     });
     const divMesh = new THREE.Mesh(divGeo, divMat);
@@ -533,47 +564,264 @@ export class StadiumTrack {
     divMesh.receiveShadow = true;
     this.group.add(divMesh);
 
-    // Instanced 3D Highway Bollards / Divider Pylons sitting atop the barriers
-    const postCount = Math.floor(segs / 10) * 2;
-    const postGeo = new THREE.CylinderGeometry(0.28, 0.34, 1.05, 10);
+    const railGeo = new THREE.BufferGeometry();
+    railGeo.setAttribute('position', new THREE.Float32BufferAttribute(railPos, 3));
+    railGeo.setIndex(railIdx);
+    railGeo.computeVertexNormals();
+    const railMat = new THREE.MeshStandardMaterial({
+      color: this.mapDef.theme === 'plaza' ? '#fef3c7' : '#e2e8f0',
+      roughness: 0.25,
+      metalness: 0.78,
+      side: THREE.DoubleSide,
+    });
+    const railMesh = new THREE.Mesh(railGeo, railMat);
+    railMesh.castShadow = true;
+    this.group.add(railMesh);
+
+    // Instanced Divider Stanchions + Glowing Thematic Boundary Beacons
+    const stepStride = 10;
+    const postCount = Math.floor(segs / stepStride) * 2;
+    const postGeo = new THREE.CylinderGeometry(0.24, 0.3, 1.2, 8);
     const postMat = new THREE.MeshStandardMaterial({
       color: this.mapDef.dividerColor,
       roughness: 0.32,
-      metalness: 0.25,
+      metalness: 0.35,
     });
     const postInst = new THREE.InstancedMesh(postGeo, postMat, postCount);
 
-    const capGeo = new THREE.SphereGeometry(0.26, 10, 8);
-    const capMat = new THREE.MeshBasicMaterial({ color: '#fef08a' });
-    const capInst = new THREE.InstancedMesh(capGeo, capMat, postCount);
+    const lampGeo = new THREE.OctahedronGeometry(0.32, 0);
+    const lampMat = new THREE.MeshBasicMaterial({
+      color: this.mapDef.theme === 'skyline' ? '#38bdf8' : '#fde047',
+    });
+    const lampInst = new THREE.InstancedMesh(lampGeo, lampMat, postCount);
 
     let idxCursor = 0;
-    for (let i = 0; i < segs; i += 10) {
+    for (let i = 0; i < segs; i += stepStride) {
       const s = this.samples[i];
       for (const side of [-1, 1]) {
         if (idxCursor >= postCount) break;
-        const px = s.point.x + s.right.x * side * (BARRIER_HALF_WIDTH + 0.58);
-        const pz = s.point.z + s.right.z * side * (BARRIER_HALF_WIDTH + 0.58);
+        const px = s.point.x + s.right.x * side * (BARRIER_HALF_WIDTH + 0.5);
+        const pz = s.point.z + s.right.z * side * (BARRIER_HALF_WIDTH + 0.5);
 
-        this._tmpPos.set(px, s.point.y + 1.9, pz);
+        this._tmpPos.set(px, s.point.y + 1.8, pz);
         this._tmpQuat.identity();
         this._tmpScale.set(1, 1, 1);
         this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
         postInst.setMatrixAt(idxCursor, this._tmpMat);
 
-        this._tmpPos.set(px, s.point.y + 2.48, pz);
+        this._tmpPos.set(px, s.point.y + 2.52, pz);
         this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-        capInst.setMatrixAt(idxCursor, this._tmpMat);
+        lampInst.setMatrixAt(idxCursor, this._tmpMat);
         idxCursor++;
       }
     }
     postInst.instanceMatrix.needsUpdate = true;
-    capInst.instanceMatrix.needsUpdate = true;
+    lampInst.instanceMatrix.needsUpdate = true;
     postInst.computeBoundingSphere();
-    capInst.computeBoundingSphere();
-    this.group.add(postInst, capInst);
+    lampInst.computeBoundingSphere();
+    this.group.add(postInst, lampInst);
 
-    this.disposables.push(divGeo, divMat, postGeo, postMat, capGeo, capMat);
+    // 3D Racing Tire Stacks along curving outer boundary corners
+    const tireGeo = new THREE.TorusGeometry(0.68, 0.28, 8, 14);
+    tireGeo.rotateX(Math.PI / 2);
+    const tireMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.72 });
+    const tireCoords: { pos: THREE.Vector3; col: THREE.Color }[] = [];
+    const cRed = new THREE.Color(this.mapDef.dividerColor);
+    const cWhite = new THREE.Color('#f8fafc');
+    const cDark = new THREE.Color('#1e293b');
+
+    for (let i = 0; i < segs; i += 6) {
+      const prev = this.samples[(i - 4 + segs) % segs];
+      const curr = this.samples[i];
+      const next = this.samples[(i + 4) % segs];
+      // Signed turn curvature
+      const crossY = prev.tangent.z * next.tangent.x - prev.tangent.x * next.tangent.z;
+      if (Math.abs(crossY) > 0.14) {
+        const outerSide = crossY > 0 ? 1 : -1;
+        const basePos = curr.point.clone().addScaledVector(curr.right, outerSide * (BARRIER_HALF_WIDTH - 0.55));
+        for (let stack = 0; stack < 2; stack++) {
+          tireCoords.push({
+            pos: new THREE.Vector3(basePos.x, curr.point.y + 0.34 + stack * 0.54, basePos.z),
+            col: stack === 0 ? cRed : i % 12 === 0 ? cWhite : cDark,
+          });
+        }
+      }
+    }
+
+    if (tireCoords.length > 0) {
+      const tireInst = new THREE.InstancedMesh(tireGeo, tireMat, tireCoords.length);
+      tireCoords.forEach((tc, k) => {
+        this._tmpPos.copy(tc.pos);
+        this._tmpQuat.identity();
+        this._tmpScale.set(1, 1, 1);
+        this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        tireInst.setMatrixAt(k, this._tmpMat);
+        tireInst.setColorAt(k, tc.col);
+      });
+      tireInst.instanceMatrix.needsUpdate = true;
+      if (tireInst.instanceColor) tireInst.instanceColor.needsUpdate = true;
+      tireInst.computeBoundingSphere();
+      this.group.add(tireInst);
+    }
+
+    this.disposables.push(
+      divGeo,
+      divMat,
+      railGeo,
+      railMat,
+      postGeo,
+      postMat,
+      lampGeo,
+      lampMat,
+      tireGeo,
+      tireMat
+    );
+  }
+
+  private buildTracksideRocksAndCliffs(): void {
+    // Procedural sculpted 3D Boulders & Rock Outcrops lining track shoulders & scenic vista
+    const rockGeo = new THREE.DodecahedronGeometry(1, 1);
+    const posAttr = rockGeo.getAttribute('position') as THREE.BufferAttribute;
+    for (let i = 0; i < posAttr.count; i++) {
+      const vx = posAttr.getX(i);
+      const vy = posAttr.getY(i);
+      const vz = posAttr.getZ(i);
+      const n = 0.82 + Math.abs(Math.sin(vx * 3.1 + vy * 2.7 + vz * 4.3)) * 0.36;
+      posAttr.setXYZ(i, vx * n, vy * (n * 0.85), vz * n);
+    }
+    rockGeo.computeVertexNormals();
+
+    const rockMat = new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.88,
+      metalness: 0.04,
+      flatShading: true,
+    });
+
+    const rockPalette =
+      this.mapDef.theme === 'plaza'
+        ? [new THREE.Color('#d97706'), new THREE.Color('#b45309'), new THREE.Color('#f59e0b')]
+        : this.mapDef.theme === 'stadium'
+        ? [new THREE.Color('#475569'), new THREE.Color('#334155'), new THREE.Color('#64748b')]
+        : [new THREE.Color('#78716c'), new THREE.Color('#57534e'), new THREE.Color('#a8a29e')];
+
+    const rockCount = 110;
+    const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
+    rockInst.castShadow = true;
+    rockInst.receiveShadow = true;
+
+    for (let i = 0; i < rockCount; i++) {
+      const idx = Math.floor(((i * 0.6180339887) % 1) * SAMPLE_COUNT);
+      const s = this.samples[idx];
+      const side = i % 2 === 0 ? 1 : -1;
+      const offsetDist = BARRIER_HALF_WIDTH + 3.5 + (i % 5) * 3.2;
+      const px = s.point.x + s.right.x * side * offsetDist + ((i % 3) - 1) * 1.4;
+      const pz = s.point.z + s.right.z * side * offsetDist + (((i + 1) % 3) - 1) * 1.4;
+      const sx = 1.6 + (i % 4) * 1.15;
+      const sy = 1.1 + (i % 3) * 0.95;
+      const sz = 1.5 + ((i + 2) % 4) * 1.05;
+
+      this._tmpPos.set(px, Math.max(0, s.point.y * 0.5) + sy * 0.35, pz);
+      this._tmpQuat.setFromEuler(new THREE.Euler((i % 5) * 0.3, i * 1.1, (i % 3) * 0.25));
+      this._tmpScale.set(sx, sy, sz);
+      this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+      rockInst.setMatrixAt(i, this._tmpMat);
+      rockInst.setColorAt(i, rockPalette[i % rockPalette.length]);
+    }
+    rockInst.instanceMatrix.needsUpdate = true;
+    if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
+    rockInst.computeBoundingSphere();
+    this.group.add(rockInst);
+    this.disposables.push(rockGeo, rockMat);
+  }
+
+  private buildPlazaFountainAndParasols(): void {
+    // Scenic Coconut Plaza Water Fountain in infield + Colorful Resort Parasols
+    const basinGeo = new THREE.CylinderGeometry(16, 17.5, 2.2, 24);
+    const basinMat = new THREE.MeshStandardMaterial({ color: '#fde68a', roughness: 0.55 });
+    const waterGeo = new THREE.CylinderGeometry(14.5, 14.5, 1.8, 24);
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: '#0ea5e9',
+      emissive: '#0284c7',
+      emissiveIntensity: 0.35,
+      roughness: 0.12,
+      metalness: 0.3,
+    });
+    const fountain = new THREE.Group();
+    fountain.position.set(42, 0.5, -24);
+    fountain.add(new THREE.Mesh(basinGeo, basinMat));
+    const water = new THREE.Mesh(waterGeo, waterMat);
+    water.position.y = 0.35;
+    fountain.add(water);
+
+    const jetGeo = new THREE.TorusGeometry(6.5, 0.45, 8, 24);
+    jetGeo.rotateX(Math.PI / 2);
+    const jetMat = new THREE.MeshBasicMaterial({ color: '#bae6fd', transparent: true, opacity: 0.8 });
+    for (let r = 0; r < 2; r++) {
+      const ring = new THREE.Mesh(jetGeo, jetMat);
+      ring.position.y = 2.6 + r * 2.4;
+      ring.scale.setScalar(1 - r * 0.38);
+      fountain.add(ring);
+      this.fountainRings.push(ring);
+    }
+    this.group.add(fountain);
+
+    // Colorful Resort Parasols along the promenade
+    const poleGeo = new THREE.CylinderGeometry(0.14, 0.14, 4.2, 6);
+    const poleMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.4 });
+    const canopyGeo = new THREE.ConeGeometry(3.1, 1.4, 8);
+    const parasolColors = ['#ef4444', '#38bdf8', '#facc15', '#ec4899'];
+    for (let i = 0; i < 16; i++) {
+      const idx = Math.floor(((i + 0.35) / 16) * SAMPLE_COUNT) % SAMPLE_COUNT;
+      const s = this.samples[idx];
+      const side = i % 2 === 0 ? 1 : -1;
+      const pPos = s.point.clone().addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 6.5));
+      const umb = new THREE.Group();
+      umb.position.set(pPos.x, s.point.y, pPos.z);
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.y = 2.1;
+      umb.add(pole);
+      const cMat = new THREE.MeshStandardMaterial({
+        color: parasolColors[i % parasolColors.length],
+        roughness: 0.55,
+      });
+      const canopy = new THREE.Mesh(canopyGeo, cMat);
+      canopy.position.y = 4.3;
+      umb.add(canopy);
+      this.group.add(umb);
+      this.disposables.push(cMat);
+    }
+
+    this.disposables.push(basinGeo, basinMat, waterGeo, waterMat, jetGeo, jetMat, poleGeo, poleMat, canopyGeo);
+  }
+
+  private buildHotAirBalloons(): void {
+    const envGeo = new THREE.SphereGeometry(7.5, 16, 14);
+    const bskGeo = new THREE.BoxGeometry(2.6, 2.2, 2.6);
+    const bskMat = new THREE.MeshStandardMaterial({ color: '#92400e', roughness: 0.8 });
+    const colors = ['#ef4444', '#facc15', '#38bdf8', '#ec4899', '#22c55e'];
+
+    for (let i = 0; i < 5; i++) {
+      const bGroup = new THREE.Group();
+      const ang = (i / 5) * Math.PI * 2 + 0.4;
+      const dist = 140 + (i % 2) * 55;
+      const baseY = 46 + (i % 3) * 14;
+      bGroup.position.set(Math.cos(ang) * dist, baseY, Math.sin(ang) * dist);
+
+      const envMat = new THREE.MeshStandardMaterial({ color: colors[i], roughness: 0.45 });
+      const env = new THREE.Mesh(envGeo, envMat);
+      env.scale.set(1, 1.24, 1);
+      bGroup.add(env);
+
+      const bsk = new THREE.Mesh(bskGeo, bskMat);
+      bsk.position.y = -11.5;
+      bGroup.add(bsk);
+
+      this.group.add(bGroup);
+      this.floatingBalloons.push({ group: bGroup, baseY, phase: i * 1.4 });
+      this.disposables.push(envMat);
+    }
+    this.disposables.push(envGeo, bskGeo, bskMat);
   }
 
   private buildShritizRockArch(tVal: number, withPalmTopper: boolean): void {
@@ -1448,6 +1696,18 @@ export class StadiumTrack {
 
     for (let i = 0; i < this.palmCrowns.length; i++) {
       this.palmCrowns[i].rotation.z = Math.sin(elapsed * 1.8 + i) * 0.08;
+    }
+
+    for (let i = 0; i < this.floatingBalloons.length; i++) {
+      const b = this.floatingBalloons[i];
+      b.group.position.y = b.baseY + Math.sin(elapsed * 0.7 + b.phase) * 3.5;
+      b.group.rotation.y += dt * 0.18;
+    }
+
+    for (let i = 0; i < this.fountainRings.length; i++) {
+      const ring = this.fountainRings[i];
+      ring.position.y = 2.6 + i * 2.2 + Math.sin(elapsed * 3.5 + i * 1.5) * 0.45;
+      ring.rotation.z += dt * (1.2 + i * 0.6);
     }
 
     for (const hz of this.trackHazards) {

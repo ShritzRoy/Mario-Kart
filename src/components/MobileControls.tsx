@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ControlMode } from '../game/engine.ts';
+import type { DeviceTier } from './CircularAbilityWheel.tsx';
 
 interface MobileControlsProps {
   controlMode: ControlMode;
   autoAccel: boolean;
+  deviceTier: DeviceTier;
   onUpdate: (
     steer: number,
     drift: boolean,
@@ -13,7 +15,12 @@ interface MobileControlsProps {
   ) => void;
 }
 
-export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileControlsProps) {
+export function MobileControls({
+  controlMode,
+  autoAccel,
+  deviceTier,
+  onUpdate,
+}: MobileControlsProps) {
   const [joyKnob, setJoyKnob] = useState({ x: 0, y: 0 });
   const joyPointerIdRef = useRef<number | null>(null);
   const joyCenterRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -52,14 +59,23 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
   if (!isActive) return null;
 
   const useJoystick = controlMode === 'mobile_joystick';
+  const compact = deviceTier === 'mobile';
+  const joyMax = compact ? 32 : 42;
+  const btnPrimary = compact ? 50 : 62;
+  const btnSecondary = compact ? 44 : 54;
+  const btnSmall = compact ? 38 : 46;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-3 sm:bottom-5 px-3 sm:px-5 flex items-end justify-between z-30">
+    <div className="pointer-events-none fixed inset-x-0 bottom-2.5 sm:bottom-4 px-2.5 sm:px-5 flex items-end justify-between z-30">
       {/* Left Thumb Zone: Circular Analog Joystick OR Circular Left/Right Steer Buttons */}
       {useJoystick ? (
         <div
-          className="pointer-events-auto relative w-28 h-28 sm:w-32 sm:h-32 rounded-full border-2 border-white/30 touch-none flex items-center justify-center shadow-2xl"
-          style={{ backgroundColor: 'rgba(10, 15, 28, 0.72)' }}
+          className="pointer-events-auto relative rounded-full border-2 border-white/30 touch-none flex items-center justify-center shadow-2xl"
+          style={{
+            width: compact ? 96 : 124,
+            height: compact ? 96 : 124,
+            backgroundColor: 'rgba(10, 15, 28, 0.72)',
+          }}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
             joyPointerIdRef.current = e.pointerId;
@@ -68,18 +84,18 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
               x: rect.left + rect.width / 2,
               y: rect.top + rect.height / 2,
             };
-            const dx = Math.max(-40, Math.min(40, e.clientX - joyCenterRef.current.x));
-            const dy = Math.max(-40, Math.min(40, e.clientY - joyCenterRef.current.y));
+            const dx = Math.max(-joyMax, Math.min(joyMax, e.clientX - joyCenterRef.current.x));
+            const dy = Math.max(-joyMax, Math.min(joyMax, e.clientY - joyCenterRef.current.y));
             setJoyKnob({ x: dx, y: dy });
-            stateRef.current.steer = dx / 40;
+            stateRef.current.steer = dx / joyMax;
             pushUpdate();
           }}
           onPointerMove={(e) => {
             if (joyPointerIdRef.current !== e.pointerId) return;
-            const dx = Math.max(-40, Math.min(40, e.clientX - joyCenterRef.current.x));
-            const dy = Math.max(-40, Math.min(40, e.clientY - joyCenterRef.current.y));
+            const dx = Math.max(-joyMax, Math.min(joyMax, e.clientX - joyCenterRef.current.x));
+            const dy = Math.max(-joyMax, Math.min(joyMax, e.clientY - joyCenterRef.current.y));
             setJoyKnob({ x: dx, y: dy });
-            stateRef.current.steer = dx / 40;
+            stateRef.current.steer = dx / joyMax;
             pushUpdate();
           }}
           onPointerUp={(e) => {
@@ -97,14 +113,16 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
           }}
         >
           <div
-            className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-amber-400 border-2 border-white shadow-lg"
+            className="rounded-full bg-amber-400 border-2 border-white shadow-lg"
             style={{
+              width: compact ? 42 : 54,
+              height: compact ? 42 : 54,
               transform: `translate(${joyKnob.x}px, ${joyKnob.y}px)`,
             }}
           />
         </div>
       ) : (
-        <div className="pointer-events-auto flex items-center gap-2.5 touch-none">
+        <div className="pointer-events-auto flex items-center gap-2 touch-none">
           <button
             onPointerDown={(e) => {
               e.currentTarget.setPointerCapture(e.pointerId);
@@ -119,8 +137,13 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
               stateRef.current.left = false;
               pushUpdate();
             }}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-2 border-white/35 text-white font-black text-xl sm:text-2xl shadow-xl active:scale-95 flex items-center justify-center"
-            style={{ backgroundColor: 'rgba(10, 15, 28, 0.78)' }}
+            className="rounded-full border-2 border-white/35 text-white font-black shadow-xl active:scale-95 flex items-center justify-center"
+            style={{
+              width: btnPrimary,
+              height: btnPrimary,
+              fontSize: compact ? 18 : 22,
+              backgroundColor: 'rgba(10, 15, 28, 0.78)',
+            }}
           >
             ◀
           </button>
@@ -138,16 +161,21 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
               stateRef.current.right = false;
               pushUpdate();
             }}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-2 border-white/35 text-white font-black text-xl sm:text-2xl shadow-xl active:scale-95 flex items-center justify-center"
-            style={{ backgroundColor: 'rgba(10, 15, 28, 0.78)' }}
+            className="rounded-full border-2 border-white/35 text-white font-black shadow-xl active:scale-95 flex items-center justify-center"
+            style={{
+              width: btnPrimary,
+              height: btnPrimary,
+              fontSize: compact ? 18 : 22,
+              backgroundColor: 'rgba(10, 15, 28, 0.78)',
+            }}
           >
             ▶
           </button>
         </div>
       )}
 
-      {/* Right Thumb Zone: All Circular Buttons (Item + Drift + Gas + Brake) */}
-      <div className="pointer-events-auto flex items-end gap-2 touch-none">
+      {/* Right Thumb Zone: All Circular Buttons (Item + Drift + Brake + Gas) */}
+      <div className="pointer-events-auto flex items-end gap-1.5 sm:gap-2 touch-none">
         <button
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
@@ -162,7 +190,8 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
             stateRef.current.item = false;
             pushUpdate();
           }}
-          className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-sky-200/80 bg-sky-500/90 text-slate-950 font-black text-[11px] uppercase shadow-xl active:scale-95 flex items-center justify-center"
+          className="rounded-full border-2 border-sky-200/80 bg-sky-500/90 text-slate-950 font-black uppercase shadow-xl active:scale-95 flex items-center justify-center"
+          style={{ width: btnSecondary, height: btnSecondary, fontSize: compact ? 10 : 11 }}
         >
           Item
         </button>
@@ -181,13 +210,14 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
             stateRef.current.drift = false;
             pushUpdate();
           }}
-          className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-2 border-amber-200/85 bg-amber-400/95 text-slate-950 font-black text-[11px] sm:text-xs uppercase shadow-xl active:scale-95 flex items-center justify-center"
+          className="rounded-full border-2 border-amber-200/85 bg-amber-400/95 text-slate-950 font-black uppercase shadow-xl active:scale-95 flex items-center justify-center"
+          style={{ width: btnPrimary, height: btnPrimary, fontSize: compact ? 10 : 12 }}
         >
           Drift
         </button>
 
         {!autoAccel && (
-          <div className="flex items-end gap-2">
+          <div className="flex items-end gap-1.5 sm:gap-2">
             <button
               onPointerDown={(e) => {
                 e.currentTarget.setPointerCapture(e.pointerId);
@@ -202,7 +232,8 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
                 stateRef.current.brake = false;
                 pushUpdate();
               }}
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border-2 border-rose-200/70 bg-rose-600/90 text-white font-black text-[10px] uppercase shadow-xl active:scale-95 flex items-center justify-center"
+              className="rounded-full border-2 border-rose-200/70 bg-rose-600/90 text-white font-black uppercase shadow-xl active:scale-95 flex items-center justify-center"
+              style={{ width: btnSmall, height: btnSmall, fontSize: 9 }}
             >
               Brk
             </button>
@@ -221,7 +252,8 @@ export function MobileControls({ controlMode, autoAccel, onUpdate }: MobileContr
                 stateRef.current.throttle = false;
                 pushUpdate();
               }}
-              className="w-15 h-15 sm:w-16 sm:h-16 rounded-full border-2 border-emerald-200/80 bg-emerald-500/95 text-slate-950 font-black text-xs uppercase shadow-xl active:scale-95 flex items-center justify-center"
+              className="rounded-full border-2 border-emerald-200/80 bg-emerald-500/95 text-slate-950 font-black uppercase shadow-xl active:scale-95 flex items-center justify-center"
+              style={{ width: btnPrimary, height: btnPrimary, fontSize: compact ? 11 : 12 }}
             >
               Gas
             </button>

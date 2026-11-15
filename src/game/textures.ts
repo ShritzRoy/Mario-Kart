@@ -41,70 +41,72 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     return tex;
   };
 
-  // 1. Dark Stadium / Highway Asphalt Road Texture
+  // 1. Dark Stadium / Highway Asphalt Road Texture (Clean edges — 3D curbs & barriers define borders, no stark white edge lines)
   const [asphC, asphCtx] = makeCanvas(512, 512);
   asphCtx.fillStyle = '#2d323e';
   asphCtx.fillRect(0, 0, 512, 512);
-  for (let i = 0; i < 12000; i++) {
+  for (let i = 0; i < 14000; i++) {
     const x = Math.random() * 512;
     const y = Math.random() * 512;
-    const v = 38 + Math.floor(Math.random() * 32);
+    const v = 36 + Math.floor(Math.random() * 34);
     asphCtx.fillStyle = `rgb(${v},${v + 2},${v + 6})`;
     asphCtx.fillRect(x, y, 2, 2);
   }
   const groove = asphCtx.createLinearGradient(0, 0, 512, 0);
-  groove.addColorStop(0.0, 'rgba(0,0,0,0.2)');
-  groove.addColorStop(0.25, 'rgba(0,0,0,0.0)');
+  groove.addColorStop(0.0, 'rgba(0,0,0,0.28)');
+  groove.addColorStop(0.14, 'rgba(0,0,0,0.0)');
   groove.addColorStop(0.38, 'rgba(10,12,18,0.24)');
   groove.addColorStop(0.5, 'rgba(0,0,0,0.02)');
   groove.addColorStop(0.62, 'rgba(10,12,18,0.24)');
-  groove.addColorStop(0.75, 'rgba(0,0,0,0.0)');
-  groove.addColorStop(1.0, 'rgba(0,0,0,0.2)');
+  groove.addColorStop(0.86, 'rgba(0,0,0,0.0)');
+  groove.addColorStop(1.0, 'rgba(0,0,0,0.28)');
   asphCtx.fillStyle = groove;
   asphCtx.fillRect(0, 0, 512, 512);
-  asphCtx.fillStyle = '#f8fafc';
-  asphCtx.fillRect(14, 0, 14, 512);
-  asphCtx.fillRect(484, 0, 14, 512);
-  asphCtx.fillStyle = 'rgba(255,255,255,0.28)';
+  // Subtle worn racing lane center dashes
+  asphCtx.fillStyle = 'rgba(226, 232, 240, 0.22)';
   for (let y = 0; y < 512; y += 64) {
-    asphCtx.fillRect(252, y + 8, 8, 34);
+    asphCtx.fillRect(252, y + 10, 8, 30);
   }
-  const asphaltMap = register(new THREE.CanvasTexture(asphC), true, 1, 36);
+  const asphaltMap = register(new THREE.CanvasTexture(asphC), true, 1, 38);
 
-  // 1b. Nintendo Sunlit Plaza Road Texture (Image 2 warm grey asphalt + orange/white checkered side strips)
+  // 1b. Nintendo Sunlit Plaza Road Texture (Warm slate asphalt + orange/cream checkered shoulders, NO white outer lines)
   const [pAsphC, pAsphCtx] = makeCanvas(512, 512);
-  pAsphCtx.fillStyle = '#74736f';
+  pAsphCtx.fillStyle = '#73716c';
   pAsphCtx.fillRect(0, 0, 512, 512);
-  for (let i = 0; i < 12000; i++) {
-    const v = 98 + Math.floor(Math.random() * 34);
+  for (let i = 0; i < 13000; i++) {
+    const v = 96 + Math.floor(Math.random() * 36);
     pAsphCtx.fillStyle = `rgb(${v},${v - 1},${v - 4})`;
     pAsphCtx.fillRect(Math.random() * 512, Math.random() * 512, 2, 2);
   }
-  // Orange-and-white checkered racing shoulder stripes along left and right edge (matching Image 2!)
+  const pGroove = pAsphCtx.createLinearGradient(0, 0, 512, 0);
+  pGroove.addColorStop(0, 'rgba(40,25,10,0.22)');
+  pGroove.addColorStop(0.15, 'rgba(0,0,0,0)');
+  pGroove.addColorStop(0.85, 'rgba(0,0,0,0)');
+  pGroove.addColorStop(1, 'rgba(40,25,10,0.22)');
+  pAsphCtx.fillStyle = pGroove;
+  pAsphCtx.fillRect(0, 0, 512, 512);
+
+  // Orange-and-cream checkered racing shoulder stripes
   const chkSize = 16;
   for (let y = 0; y < 512; y += chkSize) {
     const even = (y / chkSize) % 2 === 0;
-    // Left double checker strip
     pAsphCtx.fillStyle = even ? '#f97316' : '#fef3c7';
-    pAsphCtx.fillRect(12, y, chkSize, chkSize);
+    pAsphCtx.fillRect(4, y, chkSize, chkSize);
     pAsphCtx.fillStyle = even ? '#fef3c7' : '#f97316';
-    pAsphCtx.fillRect(12 + chkSize, y, chkSize, chkSize);
-    // Right double checker strip
+    pAsphCtx.fillRect(4 + chkSize, y, chkSize, chkSize);
+
     pAsphCtx.fillStyle = even ? '#f97316' : '#fef3c7';
-    pAsphCtx.fillRect(512 - 12 - chkSize * 2, y, chkSize, chkSize);
+    pAsphCtx.fillRect(512 - 4 - chkSize * 2, y, chkSize, chkSize);
     pAsphCtx.fillStyle = even ? '#fef3c7' : '#f97316';
-    pAsphCtx.fillRect(512 - 12 - chkSize, y, chkSize, chkSize);
+    pAsphCtx.fillRect(512 - 4 - chkSize, y, chkSize, chkSize);
   }
-  pAsphCtx.fillStyle = '#ffffff';
-  pAsphCtx.fillRect(8, 0, 5, 512);
-  pAsphCtx.fillRect(499, 0, 5, 512);
-  // Crisp white dashed lane markers
-  pAsphCtx.fillStyle = 'rgba(255,255,255,0.65)';
+  // Subtle cream dashed lane markers
+  pAsphCtx.fillStyle = 'rgba(255,250,235,0.42)';
   for (let y = 0; y < 512; y += 64) {
-    pAsphCtx.fillRect(174, y + 10, 8, 32);
-    pAsphCtx.fillRect(330, y + 10, 8, 32);
+    pAsphCtx.fillRect(174, y + 10, 7, 30);
+    pAsphCtx.fillRect(331, y + 10, 7, 30);
   }
-  const plazaAsphaltMap = register(new THREE.CanvasTexture(pAsphC), true, 1, 36);
+  const plazaAsphaltMap = register(new THREE.CanvasTexture(pAsphC), true, 1, 38);
 
   // Asphalt Bump
   const [abC, abCtx] = makeCanvas(256, 256);
@@ -115,37 +117,52 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     abCtx.fillStyle = `rgb(${v},${v},${v})`;
     abCtx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
   }
-  const asphaltBump = register(new THREE.CanvasTexture(abC), false, 1, 36);
+  const asphaltBump = register(new THREE.CanvasTexture(abC), false, 1, 38);
 
-  // 2. FIA Red/White Rumble Kerb
+  // 2. Sculpted Red/Slate Rumble Kerb
   const [kerbC, kerbCtx] = makeCanvas(128, 256);
-  kerbCtx.fillStyle = '#e11d48';
+  kerbCtx.fillStyle = '#dc2626';
   kerbCtx.fillRect(0, 0, 128, 128);
-  kerbCtx.fillStyle = '#f8fafc';
+  kerbCtx.fillStyle = '#e2e8f0';
   kerbCtx.fillRect(0, 128, 128, 128);
-  kerbCtx.fillStyle = 'rgba(0,0,0,0.18)';
-  kerbCtx.fillRect(0, 0, 12, 256);
-  const kerbMap = register(new THREE.CanvasTexture(kerbC), true, 1, 70);
+  kerbCtx.fillStyle = 'rgba(15,23,42,0.28)';
+  kerbCtx.fillRect(0, 0, 16, 256);
+  kerbCtx.fillRect(114, 0, 14, 256);
+  const kerbMap = register(new THREE.CanvasTexture(kerbC), true, 1, 74);
 
-  // 2b. Orange/White Resort Kerb (Image 2 style)
+  // 2b. Warm Terracotta/Cream Resort Kerb
   const [pKerbC, pKerbCtx] = makeCanvas(128, 256);
-  pKerbCtx.fillStyle = '#fb923c';
+  pKerbCtx.fillStyle = '#ea580c';
   pKerbCtx.fillRect(0, 0, 128, 128);
-  pKerbCtx.fillStyle = '#ffffff';
+  pKerbCtx.fillStyle = '#fef3c7';
   pKerbCtx.fillRect(0, 128, 128, 128);
-  pKerbCtx.fillStyle = 'rgba(124,45,18,0.18)';
-  pKerbCtx.fillRect(0, 0, 12, 256);
-  const plazaKerbMap = register(new THREE.CanvasTexture(pKerbC), true, 1, 70);
+  pKerbCtx.fillStyle = 'rgba(124,45,18,0.24)';
+  pKerbCtx.fillRect(0, 0, 16, 256);
+  pKerbCtx.fillRect(114, 0, 14, 256);
+  const plazaKerbMap = register(new THREE.CanvasTexture(pKerbC), true, 1, 74);
 
-  // 2c. 3D Jersey Divider Barrier Stripe Texture
-  const [divC, divCtx] = makeCanvas(128, 256);
-  divCtx.fillStyle = '#e2e8f0';
-  divCtx.fillRect(0, 0, 128, 128);
-  divCtx.fillStyle = '#f97316';
-  divCtx.fillRect(0, 128, 128, 128);
-  divCtx.fillStyle = '#1e293b';
-  divCtx.fillRect(0, 118, 128, 20);
-  const dividerStripeMap = register(new THREE.CanvasTexture(divC), true, 1, 65);
+  // 2c. High-Detail Sculpted 3D Safety Barrier Panel Texture (Ribbed concrete + chevron safety rail, no plain white strip)
+  const [divC, divCtx] = makeCanvas(256, 256);
+  const barGrad = divCtx.createLinearGradient(0, 0, 256, 0);
+  barGrad.addColorStop(0, '#334155');
+  barGrad.addColorStop(0.35, '#475569');
+  barGrad.addColorStop(0.65, '#64748b');
+  barGrad.addColorStop(1, '#1e293b');
+  divCtx.fillStyle = barGrad;
+  divCtx.fillRect(0, 0, 256, 256);
+  // Concrete panel seams
+  divCtx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+  for (let y = 0; y < 256; y += 64) {
+    divCtx.fillRect(0, y, 256, 5);
+  }
+  // Angled warning chevron band along upper barrier face
+  for (let y = 0; y < 256; y += 64) {
+    divCtx.fillStyle = (y / 64) % 2 === 0 ? '#f59e0b' : '#0f172a';
+    divCtx.fillRect(48, y + 6, 46, 54);
+    divCtx.fillStyle = (y / 64) % 2 === 0 ? '#38bdf8' : '#1e293b';
+    divCtx.fillRect(102, y + 6, 20, 54);
+  }
+  const dividerStripeMap = register(new THREE.CanvasTexture(divC), true, 1, 68);
 
   // 3. Turf Grass
   const [grassC, grassCtx] = makeCanvas(512, 512);
@@ -277,7 +294,6 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   woodGrad.addColorStop(1, '#713f12');
   signCtx.fillStyle = woodGrad;
   signCtx.fillRect(0, 0, 1024, 256);
-  // Wood plank lines & rock bevel border
   signCtx.strokeStyle = '#422006';
   signCtx.lineWidth = 14;
   signCtx.strokeRect(10, 10, 1004, 236);
@@ -303,7 +319,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   shritizArchSignMap.needsUpdate = true;
   created.push(shritizArchSignMap);
 
-  // 11. Warm Resort Plaza Facade Wall (Terracotta brick & sunny windows for Coconut Plaza)
+  // 11. Warm Resort Plaza Facade Wall
   const [pwC, pwCtx] = makeCanvas(512, 256);
   pwCtx.fillStyle = '#fb923c';
   pwCtx.fillRect(0, 0, 512, 256);
@@ -311,7 +327,6 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   pwCtx.fillRect(0, 0, 512, 32);
   pwCtx.fillStyle = '#ea580c';
   pwCtx.fillRect(0, 218, 512, 38);
-  // Glass shop windows
   for (let x = 28; x < 480; x += 120) {
     pwCtx.fillStyle = '#0c4a6e';
     pwCtx.fillRect(x, 54, 88, 140);

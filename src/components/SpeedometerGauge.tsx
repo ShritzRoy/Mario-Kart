@@ -3,6 +3,7 @@ interface SpeedometerGaugeProps {
   driftLevel: number;
   boostActive: boolean;
   starActive: boolean;
+  sizePx?: number;
 }
 
 function polarToXY(cx: number, cy: number, r: number, angleDegFromTop: number) {
@@ -33,6 +34,7 @@ export function SpeedometerGauge({
   driftLevel,
   boostActive,
   starActive,
+  sizePx = 132,
 }: SpeedometerGaugeProps) {
   const maxGaugeKmh = 240;
   const clamped = Math.min(maxGaugeKmh, Math.max(0, speedKmh));
@@ -45,10 +47,12 @@ export function SpeedometerGauge({
   const cy = 100;
 
   return (
-    <div className="relative w-[112px] h-[112px] sm:w-[134px] sm:h-[134px] select-none drop-shadow-[0_8px_18px_rgba(0,0,0,0.7)]">
+    <div
+      className="relative select-none drop-shadow-[0_8px_18px_rgba(0,0,0,0.7)] shrink-0"
+      style={{ width: sizePx, height: sizePx }}
+    >
       <svg viewBox="0 0 200 200" className="w-full h-full overflow-visible">
         <defs>
-          {/* Metallic Chrome Outer Bezel */}
           <linearGradient id="speedChromeOuter" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="#f8fafc" />
             <stop offset="28%" stopColor="#94a3b8" />
@@ -61,15 +65,11 @@ export function SpeedometerGauge({
             <stop offset="45%" stopColor="#e2e8f0" />
             <stop offset="100%" stopColor="#1e293b" />
           </linearGradient>
-
-          {/* Dark Glossy Dial Face */}
           <radialGradient id="speedDialFace" cx="50%" cy="46%" r="55%">
             <stop offset="0%" stopColor="#272b34" />
             <stop offset="70%" stopColor="#13161c" />
             <stop offset="100%" stopColor="#090b0f" />
           </radialGradient>
-
-          {/* Green -> Yellow -> Orange -> Red Perimeter Band */}
           <linearGradient id="speedColorArc" x1="0%" y1="100%" x2="100%" y2="20%">
             <stop offset="0%" stopColor="#22c55e" />
             <stop offset="32%" stopColor="#a3e635" />
@@ -77,8 +77,6 @@ export function SpeedometerGauge({
             <stop offset="76%" stopColor="#fb923c" />
             <stop offset="100%" stopColor="#ef4444" />
           </linearGradient>
-
-          {/* Center Metallic Cap */}
           <radialGradient id="speedHubCap" cx="35%" cy="30%" r="70%">
             <stop offset="0%" stopColor="#ffffff" />
             <stop offset="45%" stopColor="#cbd5e1" />
@@ -86,12 +84,10 @@ export function SpeedometerGauge({
           </radialGradient>
         </defs>
 
-        {/* Outer Chrome Bezel Rings */}
         <circle cx={cx} cy={cy} r="96" fill="url(#speedChromeOuter)" stroke="#1e293b" strokeWidth="2.5" />
         <circle cx={cx} cy={cy} r="87" fill="url(#speedChromeInner)" />
         <circle cx={cx} cy={cy} r="82" fill="url(#speedDialFace)" stroke="#0f172a" strokeWidth="2" />
 
-        {/* Colored Speedometer Outer Band */}
         <path
           d={describeArc(cx, cy, 74, startAngle, endAngle)}
           fill="none"
@@ -101,7 +97,6 @@ export function SpeedometerGauge({
           opacity={boostActive || starActive ? 1 : 0.92}
         />
 
-        {/* Minor & Major Radial Tick Marks */}
         {Array.from({ length: 49 }).map((_, i) => {
           const t = i / 48;
           const angle = startAngle + t * (endAngle - startAngle);
@@ -123,7 +118,6 @@ export function SpeedometerGauge({
           );
         })}
 
-        {/* Numeric Speed Labels */}
         {MAJOR_MARKS.map((val) => {
           const t = val / maxGaugeKmh;
           const angle = startAngle + t * (endAngle - startAngle);
@@ -137,14 +131,13 @@ export function SpeedometerGauge({
               fill="#f1f5f9"
               fontSize="9.5"
               fontWeight="800"
-              fontFamily="system-ui, sans-serif"
+              fontFamily="'Chakra Petch', sans-serif"
             >
               {val}
             </text>
           );
         })}
 
-        {/* Recessed Digital Speed Slot + 3 Nitro LEDs */}
         <rect
           x="74"
           y="134"
@@ -162,12 +155,11 @@ export function SpeedometerGauge({
           fill={starActive ? '#fde047' : boostActive ? '#fb923c' : '#e2e8f0'}
           fontSize="12.5"
           fontWeight="900"
-          fontFamily="monospace"
+          fontFamily="'Chakra Petch', monospace"
         >
           {String(speedKmh).padStart(3, '0')}
         </text>
 
-        {/* 3 Compact Drift / Nitro Indicator Dots */}
         {[1, 2, 3].map((lv) => {
           const lit = boostActive || starActive || driftLevel >= lv;
           const dotColor =
@@ -191,22 +183,17 @@ export function SpeedometerGauge({
           );
         })}
 
-        {/* Rotating Analog Red Pointer Needle */}
         <g
           transform={`rotate(${needleAngle.toFixed(1)} ${cx} ${cy})`}
           style={{ transition: 'transform 55ms linear' }}
         >
-          {/* Tail counterweight */}
           <rect x="97.5" y="100" width="5" height="16" rx="2" fill="#dc2626" />
-          {/* Main needle blade */}
           <polygon points="97,100 103,100 101,31 99,31" fill="#ef4444" />
           <polygon points="99,100 101,100 100.5,31 99.5,31" fill="#fca5a5" opacity="0.55" />
         </g>
 
-        {/* Metallic Center Hub Cap */}
         <circle cx={cx} cy={cy} r="12" fill="url(#speedHubCap)" stroke="#1e293b" strokeWidth="2" />
 
-        {/* Subtle Upper Dial Glass Glare */}
         <path
           d="M 28 84 A 74 74 0 0 1 172 84 Q 100 104 28 84 Z"
           fill="#ffffff"

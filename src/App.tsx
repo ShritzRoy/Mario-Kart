@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { CharacterPortrait } from './components/CharacterPortrait.tsx';
-import { CircularAbilityWheel } from './components/CircularAbilityWheel.tsx';
+import { CircularAbilityWheel, type DeviceTier } from './components/CircularAbilityWheel.tsx';
 import { MiniMap } from './components/MiniMap.tsx';
 import { MobileControls } from './components/MobileControls.tsx';
 import { PixelFlagTransition } from './components/PixelFlagTransition.tsx';
@@ -52,6 +52,7 @@ const INITIAL_HUD: HudSnapshot = {
   rank: 1,
   totalRacers: 8,
   lap: 1,
+  totalLaps: 3,
   speedKmh: 0,
   heldItem: 'none',
   rouletteActive: false,
@@ -61,6 +62,9 @@ const INITIAL_HUD: HudSnapshot = {
   boostCallout: null,
   countdownValue: 3,
   raceTimeMs: 0,
+  timeLimitMs: 120000,
+  timeRemainingMs: 120000,
+  timeTrialResult: null,
   standings: [],
   minimapPoints: [],
   minimapRacers: [],
@@ -123,7 +127,7 @@ const TITLE_MODES: {
   {
     id: 'time_trial',
     label: 'Time Trials',
-    desc: 'Solo speed run with Turbo Mushrooms — chase your best lap!',
+    desc: 'Beat the countdown clock across 3 laps with Turbo Mushrooms!',
     accent: '#4ade80',
     diamondBg: 'linear-gradient(135deg, #4ade80, #16a34a)',
   },
@@ -162,6 +166,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isPortraitMobile, setIsPortraitMobile] = useState<boolean>(false);
   const [isCompactViewport, setIsCompactViewport] = useState<boolean>(false);
+  const [deviceTier, setDeviceTier] = useState<DeviceTier>('desktop');
 
   // Online Room Multiplayer State
   const [playerName, setPlayerName] = useState<string>('Racer');
@@ -277,12 +282,15 @@ export default function App() {
     engineRef.current?.setAutoAccel(autoAccel);
   }, [autoAccel]);
 
-  // Track Portrait vs Landscape + Compact Mobile + Fullscreen State
+  // Track Portrait vs Landscape + Device Tier + Fullscreen State
   useEffect(() => {
     const checkLayout = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
       const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-      setIsPortraitMobile(touch && window.innerHeight > window.innerWidth);
-      setIsCompactViewport(window.innerHeight <= 540 || window.innerWidth < 768);
+      setIsPortraitMobile(touch && h > w);
+      setIsCompactViewport(h <= 540 || w < 768);
+      setDeviceTier(w < 640 || h < 480 ? 'mobile' : w < 1080 ? 'tablet' : 'desktop');
       setIsFullscreen(Boolean(document.fullscreenElement));
     };
     checkLayout();
@@ -491,6 +499,8 @@ export default function App() {
   const ord = formatOrdinal(hud.rank);
   const localRoomPlayer = mp.room?.players.find((p) => p.id === mp.playerId);
   const activeTitleMeta = TITLE_MODES.find((m) => m.id === hoveredTitleMode) ?? TITLE_MODES[0];
+  const speedoSize = deviceTier === 'mobile' ? 90 : deviceTier === 'tablet' ? 118 : 146;
+  const minimapSize = deviceTier === 'mobile' ? 82 : deviceTier === 'tablet' ? 112 : 140;
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0284c7] text-white select-none font-sans">
@@ -530,23 +540,95 @@ export default function App() {
 
       {/* ==================== 1. SEPARATE TITLE SCREEN + LIVE 3D CUTSCENE ==================== */}
       {hud.mode === 'title' && (
-        <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between p-3.5 sm:p-5 md:p-8 bg-gradient-to-r from-slate-950/65 via-slate-950/15 to-transparent">
-          {/* Top Title Bar */}
+        <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 sm:p-5 md:p-7 bg-gradient-to-r from-slate-950/60 via-slate-950/15 to-transparent">
+          {/* Top Title Bar: Stylized Arcade Emblem Logo & Utility Controls */}
           <div className="flex items-start justify-between gap-2">
-            <div className="pointer-events-auto flex items-center gap-2.5 sm:gap-3">
-              <div
-                className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl border-2 border-amber-300 flex items-center justify-center shadow-2xl shrink-0"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.88)' }}
+            <div className="pointer-events-auto animate-logo-float flex items-center gap-2.5 sm:gap-4">
+              {/* Custom Arcade Crest Badge */}
+              <svg
+                width={deviceTier === 'mobile' ? 42 : deviceTier === 'tablet' ? 54 : 66}
+                height={deviceTier === 'mobile' ? 42 : deviceTier === 'tablet' ? 54 : 66}
+                viewBox="0 0 80 80"
+                className="shrink-0 drop-shadow-[0_6px_16px_rgba(0,0,0,0.75)]"
               >
-                <Flag className="w-5 h-5 sm:w-6 sm:h-6 text-amber-300" />
-              </div>
-              <div>
-                <div className="text-[10px] sm:text-[11px] font-black uppercase tracking-[0.26em] text-amber-300 drop-shadow">
-                  Championship Arcade Edition
+                <defs>
+                  <linearGradient id="crestGold" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#fef08a" />
+                    <stop offset="50%" stopColor="#facc15" />
+                    <stop offset="100%" stopColor="#ea580c" />
+                  </linearGradient>
+                  <linearGradient id="crestBlue" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" stopColor="#0ea5e9" />
+                    <stop offset="100%" stopColor="#1e3a8a" />
+                  </linearGradient>
+                </defs>
+                <polygon
+                  points="40,4 72,20 66,58 40,76 14,58 8,20"
+                  fill="url(#crestBlue)"
+                  stroke="url(#crestGold)"
+                  strokeWidth="4.5"
+                />
+                <path d="M18 32 L30 24 L30 50 L18 44 Z" fill="#ffffff" opacity="0.92" />
+                <path d="M62 32 L50 24 L50 50 L62 44 Z" fill="#ef4444" opacity="0.95" />
+                <circle cx="40" cy="39" r="14" fill="#0f172a" stroke="#facc15" strokeWidth="3" />
+                <text
+                  x="40"
+                  y="44"
+                  textAnchor="middle"
+                  fill="#ffffff"
+                  fontSize="16"
+                  fontWeight="900"
+                  fontFamily="'Russo One', sans-serif"
+                >
+                  GP
+                </text>
+              </svg>
+
+              {/* Multi-Layered Stylized Typography Logo */}
+              <div className="flex flex-col leading-none">
+                <div className="flex items-center gap-2 mb-0.5 sm:mb-1">
+                  <span className="font-hud text-[9px] sm:text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
+                    ARCADE CHAMPIONSHIP
+                  </span>
                 </div>
-                <h1 className="text-2xl sm:text-3xl md:text-5xl font-black italic uppercase tracking-tight text-white drop-shadow-[0_4px_14px_rgba(0,0,0,0.85)] leading-none">
-                  Mario Kart Grand Prix
-                </h1>
+                <div className="relative flex flex-col">
+                  <h1
+                    className={`font-arcade italic uppercase tracking-tight leading-[0.9] ${
+                      deviceTier === 'mobile'
+                        ? 'text-2xl'
+                        : deviceTier === 'tablet'
+                        ? 'text-4xl'
+                        : 'text-5xl lg:text-6xl'
+                    }`}
+                    style={{
+                      backgroundImage: 'linear-gradient(180deg, #ffffff 15%, #e2e8f0 55%, #38bdf8 100%)',
+                      WebkitBackgroundClip: 'text',
+                      color: 'transparent',
+                      WebkitTextStroke: deviceTier === 'mobile' ? '1px #0f172a' : '1.5px #0f172a',
+                      filter: 'drop-shadow(0 4px 0 #090d16) drop-shadow(0 8px 18px rgba(14,165,233,0.45))',
+                    }}
+                  >
+                    MARIO KART
+                  </h1>
+                  <div className="flex items-center gap-1.5 mt-0.5 sm:mt-1">
+                    <span
+                      className={`font-arcade italic uppercase tracking-[0.14em] px-2.5 sm:px-3.5 py-0.5 rounded-md border border-amber-200/80 shadow-lg ${
+                        deviceTier === 'mobile'
+                          ? 'text-xs'
+                          : deviceTier === 'tablet'
+                          ? 'text-base'
+                          : 'text-xl'
+                      }`}
+                      style={{
+                        background: 'linear-gradient(90deg, #facc15 0%, #f97316 55%, #ef4444 100%)',
+                        color: '#090d16',
+                        transform: 'skewX(-12deg)',
+                      }}
+                    >
+                      GRAND PRIX
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -579,7 +661,11 @@ export default function App() {
           </div>
 
           {/* Left-Aligned Skewed Mode Stack with Diamond Emblems & Animated White Flag */}
-          <div className="my-auto flex flex-col gap-2 sm:gap-3 max-w-xs sm:max-w-sm md:max-w-md pl-1 sm:pl-2">
+          <div
+            className={`my-auto flex flex-col max-w-xs sm:max-w-sm md:max-w-md pl-1 sm:pl-2 ${
+              deviceTier === 'mobile' ? 'gap-1.5' : 'gap-2.5 sm:gap-3'
+            }`}
+          >
             {TITLE_MODES.map((m) => {
               const isActive = hoveredTitleMode === m.id;
               return (
@@ -588,7 +674,9 @@ export default function App() {
                   onMouseEnter={() => setHoveredTitleMode(m.id)}
                   onFocus={() => setHoveredTitleMode(m.id)}
                   onClick={() => handleSelectTitleMode(m.id)}
-                  className={`pointer-events-auto group relative flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-2.5 sm:py-3 rounded-xl border-2 transition-all duration-200 cursor-pointer text-left ${
+                  className={`pointer-events-auto group relative flex items-center gap-3 sm:gap-4 rounded-xl border-2 transition-all duration-200 cursor-pointer text-left ${
+                    deviceTier === 'mobile' ? 'px-3 py-1.5' : 'px-4 sm:px-5 py-2.5 sm:py-3'
+                  } ${
                     isActive
                       ? 'translate-x-2 sm:translate-x-3 scale-[1.03] border-white shadow-[0_12px_30px_rgba(0,0,0,0.65)]'
                       : 'border-white/25 hover:border-white/60'
@@ -603,7 +691,9 @@ export default function App() {
 
                   {/* Diamond Emblem on Left */}
                   <div
-                    className="relative z-10 w-9 h-9 sm:w-11 sm:h-11 shrink-0 rounded-lg border-2 border-white flex items-center justify-center shadow-lg"
+                    className={`relative z-10 shrink-0 rounded-lg border-2 border-white flex items-center justify-center shadow-lg ${
+                      deviceTier === 'mobile' ? 'w-7 h-7' : 'w-9 h-9 sm:w-11 sm:h-11'
+                    }`}
                     style={{
                       background: m.diamondBg,
                       transform: 'rotate(45deg) skewX(6deg)',
@@ -618,13 +708,16 @@ export default function App() {
                   </div>
 
                   {/* Label */}
-                  <div
-                    className="relative z-10 flex-1"
-                    style={{ transform: 'skewX(10deg)' }}
-                  >
+                  <div className="relative z-10 flex-1" style={{ transform: 'skewX(10deg)' }}>
                     <div
-                      className={`text-lg sm:text-xl md:text-2xl font-black italic uppercase tracking-wide transition-colors ${
-                        isActive ? 'text-slate-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]' : 'text-white'
+                      className={`font-arcade italic uppercase tracking-wide transition-colors ${
+                        deviceTier === 'mobile'
+                          ? 'text-base'
+                          : 'text-lg sm:text-xl md:text-2xl'
+                      } ${
+                        isActive
+                          ? 'text-slate-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.9)]'
+                          : 'text-white'
                       }`}
                     >
                       {m.label}
@@ -635,17 +728,14 @@ export default function App() {
             })}
           </div>
 
-          {/* Bottom Bar: Live Cutscene Tag, Made By Shritiz Credit, and Mode Description */}
+          {/* Bottom Bar: MADE BY SHRITIZ Credit + Mode Description */}
           <div className="flex flex-wrap items-end justify-between gap-2 sm:gap-4">
-            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-white/80 drop-shadow">
-              Live 3D AI Demo · Select a Mode to Begin
-            </div>
-            <div className="px-4 py-1.5 rounded-full border border-amber-300/60 bg-slate-950/85 text-xs sm:text-sm font-black italic uppercase tracking-widest text-amber-300 shadow-lg">
-              Made By Shritiz
+            <div className="font-arcade italic uppercase tracking-[0.22em] text-xs sm:text-sm md:text-base text-amber-300 drop-shadow-[0_3px_8px_rgba(0,0,0,0.95)]">
+              MADE BY SHRITIZ
             </div>
             <div
-              className="hidden sm:block rounded-xl border border-white/25 px-3.5 py-1.5 text-xs md:text-sm font-black italic tracking-wide shadow-xl"
-              style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)', color: activeTitleMeta.accent }}
+              className="hidden sm:block rounded-xl border border-white/20 px-3.5 py-1.5 font-hud text-xs md:text-sm font-bold italic tracking-wide shadow-xl"
+              style={{ backgroundColor: 'rgba(10, 15, 28, 0.78)', color: activeTitleMeta.accent }}
             >
               {activeTitleMeta.desc}
             </div>
@@ -737,36 +827,44 @@ export default function App() {
             </div>
           </div>
 
-          {/* Middle Section: Left Character + Map Selector | Right Open Moving Backdrop 3D Showcase */}
+          {/* Middle Section: Transparent Floating Character + Minimal Stats + Map Selector */}
           {paddockUiVisible && (
-            <div className="my-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-2.5 min-h-0">
+            <div className="my-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-2 min-h-0">
               <div
-                className="pointer-events-auto w-full md:w-[450px] lg:w-[490px] max-h-[calc(100vh-118px)] overflow-y-auto rounded-2xl border-2 border-white/45 p-2.5 sm:p-3 shadow-2xl space-y-2"
-                style={{ backgroundColor: 'rgba(14, 116, 174, 0.78)' }}
+                className={`pointer-events-auto w-full overflow-y-auto pr-1 space-y-2 ${
+                  deviceTier === 'mobile'
+                    ? 'max-w-[340px] max-h-[calc(100vh-112px)]'
+                    : 'md:w-[430px] lg:w-[460px] max-h-[calc(100vh-124px)]'
+                }`}
               >
-                {/* Weight Class Tabs */}
+                {/* Floating Weight Class Filter Tabs */}
                 <div className="flex flex-wrap items-center justify-between gap-1.5">
                   <div className="flex flex-wrap gap-1">
                     {(['All', 'All-Around', 'Lightweight', 'Heavyweight'] as FilterTab[]).map((tab) => (
                       <button
                         key={tab}
                         onClick={() => setWeightFilter(tab)}
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider transition cursor-pointer ${
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-hud font-bold uppercase tracking-wider transition cursor-pointer ${
                           weightFilter === tab
-                            ? 'bg-amber-400 text-slate-950 shadow'
-                            : 'bg-slate-950/55 text-white/85 hover:bg-slate-900'
+                            ? 'bg-amber-400 text-slate-950 shadow-md'
+                            : 'text-white/90 hover:bg-white/15 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]'
                         }`}
+                        style={
+                          weightFilter !== tab
+                            ? { backgroundColor: 'rgba(8, 15, 32, 0.36)' }
+                            : undefined
+                        }
                       >
                         {tab}
                       </button>
                     ))}
                   </div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200">
+                  <span className="font-hud text-[10px] font-bold uppercase tracking-wider text-amber-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
                     {selectedSpec.weightClass}
                   </span>
                 </div>
 
-                {/* 6-Column Portrait Grid with White Flag Behind Active Character */}
+                {/* Transparent Floating 6-Column Portrait Grid */}
                 <div className="grid grid-cols-6 gap-1.5">
                   {filteredRoster.map((racer) => {
                     const active = racer.id === selectedId;
@@ -776,83 +874,88 @@ export default function App() {
                         onClick={() => handleSelectCharacter(racer.id)}
                         title={`${racer.name} (${racer.weightClass})`}
                         className={`relative aspect-square rounded-xl flex items-center justify-center p-1 transition cursor-pointer overflow-hidden ${
-                          active ? 'scale-105 bg-sky-200/35' : 'bg-slate-950/40 hover:bg-sky-400/25'
+                          active ? 'scale-105' : 'hover:scale-105'
                         }`}
+                        style={{
+                          backgroundColor: active
+                            ? 'rgba(56, 189, 248, 0.28)'
+                            : 'rgba(8, 15, 32, 0.24)',
+                        }}
                       >
                         <WhiteFlagButtonWave active={active} compact />
                         <div className="relative z-10">
-                          <CharacterPortrait spec={racer} size={isCompactViewport ? 36 : 44} />
+                          <CharacterPortrait spec={racer} size={isCompactViewport ? 32 : 42} />
                         </div>
                         {active && (
-                          <span className="pointer-events-none absolute inset-0 rounded-xl border-2 border-amber-300 shadow-[0_0_12px_rgba(250,204,21,0.9)]" />
+                          <span className="pointer-events-none absolute inset-0 rounded-xl border-2 border-amber-300 shadow-[0_0_12px_rgba(250,204,21,0.85)]" />
                         )}
                       </button>
                     );
                   })}
                 </div>
 
-                {/* Live Character Stats */}
+                {/* Minimal Inline Character Stats Strip */}
                 <div
-                  className="rounded-xl p-2 border border-white/20 space-y-1"
-                  style={{ backgroundColor: 'rgba(9, 13, 26, 0.78)' }}
+                  className="rounded-xl px-2.5 py-1.5 border border-white/15 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 shadow-lg"
+                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.42)' }}
                 >
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="font-black uppercase tracking-wide text-amber-300">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="font-arcade text-xs sm:text-sm uppercase tracking-wide text-amber-300 truncate">
                       {selectedSpec.name}
                     </span>
-                    <span className="text-[10px] text-sky-200 font-semibold">{selectedSpec.title}</span>
+                    <span className="text-[10px] text-sky-200/90 font-semibold truncate">
+                      {selectedSpec.title}
+                    </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                  <div className="flex items-center gap-2.5 flex-wrap">
                     {[
-                      { label: 'Speed', val: selectedSpec.stats.topSpeed, col: '#ef4444' },
-                      { label: 'Accel', val: selectedSpec.stats.acceleration, col: '#38bdf8' },
-                      { label: 'Handle', val: selectedSpec.stats.handling, col: '#22c55e' },
-                      { label: 'Weight', val: selectedSpec.stats.weight, col: '#facc15' },
+                      { label: 'SPD', val: selectedSpec.stats.topSpeed, col: '#ef4444' },
+                      { label: 'ACC', val: selectedSpec.stats.acceleration, col: '#38bdf8' },
+                      { label: 'HND', val: selectedSpec.stats.handling, col: '#22c55e' },
+                      { label: 'WGT', val: selectedSpec.stats.weight, col: '#facc15' },
                     ].map((st) => (
-                      <div key={st.label} className="grid grid-cols-[44px_1fr_24px] items-center gap-1.5 text-[10px]">
-                        <span className="font-bold text-slate-300 uppercase">{st.label}</span>
-                        <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div key={st.label} className="flex items-center gap-1 text-[9px] font-hud">
+                        <span className="font-bold text-slate-300">{st.label}</span>
+                        <div className="w-8 sm:w-10 h-1 rounded-full bg-slate-900/80 overflow-hidden">
                           <div
                             className="h-full rounded-full transition-all duration-300"
                             style={{ width: `${st.val}%`, backgroundColor: st.col }}
                           />
                         </div>
-                        <span className="font-black text-right tabular-nums">{st.val}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* Course / Map Selection Strip (4 Maps) */}
-                <div
-                  className="rounded-xl p-2 border border-white/20 space-y-1.5"
-                  style={{ backgroundColor: 'rgba(9, 13, 26, 0.78)' }}
-                >
-                  <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-sky-300">
-                    <MapIcon className="w-3 h-3" />
-                    <span>Select Track</span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                    {MAPS.map((m) => {
-                      const active = selectedMap === m.id;
-                      return (
-                        <button
-                          key={m.id}
-                          onClick={() => handleSelectMap(m.id)}
-                          className={`relative overflow-hidden px-2 py-1.5 rounded-lg border text-left transition cursor-pointer ${
-                            active
-                              ? 'border-amber-300 bg-sky-500/30'
-                              : 'border-white/15 bg-slate-900/70 hover:bg-slate-800'
-                          }`}
-                        >
-                          <div className="text-[10px] font-black uppercase tracking-tight text-white truncate">
+                {/* Transparent Floating Course / Map Strip */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {MAPS.map((m) => {
+                    const active = selectedMap === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() => handleSelectMap(m.id)}
+                        className={`relative overflow-hidden px-2 py-1.5 rounded-xl border text-left transition cursor-pointer ${
+                          active
+                            ? 'border-amber-300 shadow-[0_0_12px_rgba(250,204,21,0.4)]'
+                            : 'border-white/20 hover:border-white/45'
+                        }`}
+                        style={{
+                          backgroundColor: active
+                            ? 'rgba(14, 165, 233, 0.34)'
+                            : 'rgba(8, 15, 32, 0.34)',
+                        }}
+                      >
+                        <div className="flex items-center gap-1 text-[10px] font-hud font-bold uppercase tracking-tight text-white truncate">
+                          <MapIcon className="w-2.5 h-2.5 text-amber-300 shrink-0" />
+                          <span className="truncate">
                             {m.name.split(' ')[0]} {m.name.split(' ')[1]}
-                          </div>
-                          <div className="text-[9px] text-sky-200/80 truncate">{m.theme}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
+                          </span>
+                        </div>
+                        <div className="text-[9px] text-sky-200/85 truncate">{m.theme}</div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1059,27 +1162,37 @@ export default function App() {
       {/* ==================== 3. ACTIVE RACE HUD ==================== */}
       {(hud.mode === 'countdown' || hud.mode === 'racing') && (
         <>
-          <div className="absolute inset-0 z-20 pointer-events-none p-2.5 sm:p-4 md:p-5 flex flex-col justify-between">
-            {/* Top Perimeter: Top-Left Circular Ability Wheel + Rank/Lap | Top-Right Analog Speedometer + Utility */}
+          <div className="absolute inset-0 z-20 pointer-events-none p-2 sm:p-4 md:p-5 flex flex-col justify-between">
+            {/* Top Perimeter: Top-Left Circular Ability Wheel + Rank/Lap/Countdown | Top-Right Analog Speedometer + Utility */}
             <div className="flex items-start justify-between gap-2 sm:gap-4">
-              <div className="flex flex-col gap-1.5 sm:gap-2.5">
-                {/* Circular Ability Roulette in Top-Left Corner */}
+              <div className="flex flex-col gap-1.5 sm:gap-2">
+                {/* Device-Responsive Circular Ability Roulette in Top-Left Corner */}
                 <CircularAbilityWheel
                   heldItem={hud.heldItem}
                   rouletteActive={hud.rouletteActive}
+                  deviceTier={deviceTier}
+                  onUseItem={() => engineRef.current?.triggerLocalItem()}
                 />
 
-                {/* Position & Lap Badge */}
+                {/* Position & Lap / Countdown Target Badge */}
                 <div className="flex items-center gap-1.5 sm:gap-2">
                   {hud.gameMode !== 'time_trial' && (
                     <div
-                      className="rounded-xl sm:rounded-2xl border border-white/20 px-2.5 sm:px-3.5 py-1 sm:py-1.5 shadow-xl flex items-baseline gap-0.5"
-                      style={{ backgroundColor: 'rgba(10, 15, 28, 0.86)' }}
+                      className={`rounded-xl sm:rounded-2xl border border-white/20 shadow-xl flex items-baseline gap-0.5 ${
+                        deviceTier === 'mobile' ? 'px-2 py-1' : 'px-3 py-1.5'
+                      }`}
+                      style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                     >
-                      <span className="text-2xl sm:text-3xl md:text-4xl font-black italic tracking-tighter text-amber-300 tabular-nums">
+                      <span
+                        className={`font-arcade italic tracking-tighter text-amber-300 tabular-nums ${
+                          deviceTier === 'mobile' ? 'text-xl' : 'text-3xl md:text-4xl'
+                        }`}
+                      >
                         {ord.num}
                       </span>
-                      <span className="text-[10px] sm:text-xs font-black text-amber-400">{ord.suffix}</span>
+                      <span className="text-[10px] sm:text-xs font-black text-amber-400">
+                        {ord.suffix}
+                      </span>
                       <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 ml-1">
                         / {hud.totalRacers}
                       </span>
@@ -1087,58 +1200,79 @@ export default function App() {
                   )}
 
                   <div
-                    className="rounded-xl sm:rounded-2xl border border-white/20 px-2.5 sm:px-3.5 py-1 sm:py-1.5 shadow-xl"
-                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.86)' }}
+                    className={`rounded-xl sm:rounded-2xl border shadow-xl ${
+                      hud.gameMode === 'time_trial' && hud.timeRemainingMs <= 15000
+                        ? 'border-rose-400/80'
+                        : 'border-white/20'
+                    } ${deviceTier === 'mobile' ? 'px-2 py-1' : 'px-3 py-1.5'}`}
+                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                   >
-                    <div className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-sky-300 tabular-nums">
-                      LAP {hud.lap} / 3
+                    <div className="font-hud text-[9px] sm:text-[10px] font-bold uppercase tracking-widest text-sky-300 tabular-nums">
+                      {hud.gameMode === 'time_trial'
+                        ? `LAP ${hud.lap} / ${hud.totalLaps} · TIME LEFT`
+                        : `LAP ${hud.lap} / ${hud.totalLaps}`}
                     </div>
-                    <div className="text-sm sm:text-base font-black tabular-nums tracking-tight leading-tight">
-                      {formatTime(hud.raceTimeMs)}
+                    <div
+                      className={`font-hud font-bold tabular-nums tracking-tight leading-tight ${
+                        deviceTier === 'mobile' ? 'text-sm' : 'text-base sm:text-lg'
+                      } ${
+                        hud.gameMode === 'time_trial'
+                          ? hud.timeRemainingMs <= 15000
+                            ? 'text-rose-400 animate-pulse'
+                            : hud.timeRemainingMs <= 30000
+                            ? 'text-amber-300'
+                            : 'text-emerald-300'
+                          : 'text-white'
+                      }`}
+                    >
+                      {hud.gameMode === 'time_trial'
+                        ? formatTime(hud.timeRemainingMs)
+                        : formatTime(hud.raceTimeMs)}
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* Top-Right Visual Analog Speedometer + Utility Controls */}
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-1.5 sm:gap-2">
                 <SpeedometerGauge
                   speedKmh={hud.speedKmh}
                   driftLevel={hud.driftLevel}
                   boostActive={hud.boostActive}
                   starActive={hud.starActive}
+                  sizePx={speedoSize}
                 />
-                <div className="pointer-events-auto flex flex-col gap-1.5">
+                <div className="pointer-events-auto flex flex-col gap-1 sm:gap-1.5">
                   <button
                     onClick={() => engineRef.current?.setPaused(true)}
-                    className="p-2 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
-                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.86)' }}
+                    className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
+                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                     title="Pause (Esc)"
                   >
-                    <Pause className="w-4 h-4" />
+                    <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
                   <button
                     onClick={enterLandscapeFullscreen}
-                    className="p-2 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
-                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.86)' }}
+                    className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
+                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                     title="Fullscreen"
                   >
                     {isFullscreen ? (
-                      <Minimize2 className="w-4 h-4 text-sky-300" />
+                      <Minimize2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-sky-300" />
                     ) : (
-                      <Maximize2 className="w-4 h-4 text-sky-300" />
+                      <Maximize2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-sky-300" />
                     )}
                   </button>
                   <button
                     onClick={toggleMute}
-                    className="p-2 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
-                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.86)' }}
+                    className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
+                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
                     title="Mute / Unmute"
                   >
                     {muted ? (
-                      <VolumeX className="w-4 h-4 text-rose-400" />
+                      <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-400" />
                     ) : (
-                      <Volume2 className="w-4 h-4 text-emerald-400" />
+                      <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
                     )}
                   </button>
                 </div>
@@ -1148,7 +1282,7 @@ export default function App() {
             {/* Center Countdown */}
             {hud.mode === 'countdown' && (
               <div className="self-center my-auto text-center">
-                <div className="text-7xl md:text-9xl font-black italic tracking-tighter text-amber-300 drop-shadow-[0_6px_24px_rgba(0,0,0,0.85)] tabular-nums">
+                <div className="font-arcade text-7xl md:text-9xl italic tracking-tighter text-amber-300 drop-shadow-[0_6px_24px_rgba(0,0,0,0.85)] tabular-nums">
                   {hud.countdownValue > 0 ? hud.countdownValue : 'GO!'}
                 </div>
               </div>
@@ -1158,10 +1292,10 @@ export default function App() {
             {hud.boostCallout && (
               <div
                 key={hud.boostCallout.id}
-                className="animate-boost-word self-center mb-24 sm:mb-28 text-center pointer-events-none"
+                className="animate-boost-word self-center mb-24 sm:mb-32 md:mb-36 text-center pointer-events-none"
               >
                 <span
-                  className="text-3xl md:text-5xl font-black italic uppercase tracking-wider"
+                  className="font-arcade text-2xl sm:text-3xl md:text-5xl italic uppercase tracking-wider"
                   style={{
                     color: hud.boostCallout.color,
                     textShadow:
@@ -1177,14 +1311,14 @@ export default function App() {
             <div className="flex items-end justify-between gap-4">
               {hud.controlMode !== 'mobile_buttons' && hud.controlMode !== 'mobile_joystick' && (
                 <div
-                  className="hidden md:flex items-center gap-2 rounded-xl border border-white/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-300"
+                  className="hidden md:flex items-center gap-2 rounded-xl border border-white/15 px-3 py-1.5 font-hud text-[10px] font-bold uppercase tracking-wider text-slate-300"
                   style={{ backgroundColor: 'rgba(10, 15, 28, 0.72)' }}
                 >
                   {hud.controlMode === 'mouse'
-                    ? 'Mouse Steer · L-Click Gas · R-Click Drift · Mid/E Item'
+                    ? 'Mouse Steer · L-Click Gas · R-Click Drift · X / E Item'
                     : hud.controlMode === 'controller'
                     ? 'Controller · A/RT Gas · RB Drift · X/Y Item'
-                    : 'WASD/Arrows · Space Drift · E Item · C Rear'}
+                    : 'WASD/Arrows · Space Drift · X / E Item · C Rear'}
                 </div>
               )}
             </div>
@@ -1196,7 +1330,7 @@ export default function App() {
               points={hud.minimapPoints}
               racers={hud.minimapRacers}
               transparent
-              size={isCompactViewport ? 96 : 134}
+              size={minimapSize}
             />
           </div>
 
@@ -1204,6 +1338,7 @@ export default function App() {
           <MobileControls
             controlMode={hud.controlMode}
             autoAccel={autoAccel}
+            deviceTier={deviceTier}
             onUpdate={(steer, drift, item, throttle, brake) =>
               engineRef.current?.setTouchControls(steer, drift, item, throttle, brake)
             }
@@ -1317,17 +1452,29 @@ export default function App() {
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <Trophy className="w-7 h-7 text-amber-400" />
+                <Trophy
+                  className={`w-7 h-7 ${
+                    hud.mode === 'finished' && hud.timeTrialResult === 'failed'
+                      ? 'text-rose-400'
+                      : 'text-amber-400'
+                  }`}
+                />
                 <div>
-                  <h2 className="text-2xl font-black uppercase tracking-tight">
+                  <h2 className="font-arcade text-2xl uppercase tracking-tight">
                     {hud.mode === 'finished'
                       ? hud.gameMode === 'time_trial'
-                        ? 'Time Trial Complete!'
+                        ? hud.timeTrialResult === 'failed'
+                          ? "Time's Up!"
+                          : 'Time Trial Cleared!'
                         : `Finished ${ord.num}${ord.suffix}!`
                       : 'Race Paused'}
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Mario Kart Grand Prix · Time {formatTime(hud.raceTimeMs)}
+                    {hud.gameMode === 'time_trial'
+                      ? hud.timeTrialResult === 'failed'
+                        ? `Reached Lap ${hud.lap}/${hud.totalLaps} · ${formatTime(hud.timeLimitMs)} Limit`
+                        : `Cleared ${hud.totalLaps} Laps in ${formatTime(hud.raceTimeMs)} (${formatTime(hud.timeRemainingMs)} left)`
+                      : `Mario Kart Grand Prix · Time ${formatTime(hud.raceTimeMs)}`}
                   </p>
                 </div>
               </div>
@@ -1352,7 +1499,7 @@ export default function App() {
                     <span>{row.name}</span>
                   </div>
                   <span className="tabular-nums text-slate-300">
-                    {row.finished ? formatTime(row.finishTimeMs) : `Lap ${row.lap}/3`}
+                    {row.finished ? formatTime(row.finishTimeMs) : `Lap ${row.lap}/${hud.totalLaps}`}
                   </span>
                 </div>
               ))}

@@ -66,6 +66,10 @@ export interface HudSnapshot {
   boostCallout: BoostCallout | null;
   countdownValue: number;
   raceTimeMs: number;
+  totalLaps: number;
+  timeLimitMs: number;
+  timeRemainingMs: number;
+  timeTrialResult: 'cleared' | 'failed' | null;
   standings: {
     id: string;
     name: string;
@@ -114,6 +118,117 @@ interface ParticleSlot {
 
 const PARTICLE_POOL_SIZE = 280;
 const SKID_POOL_SIZE = 200;
+const TRAIL_POINTS = 18;
+
+class AdditiveRibbonTrail {
+  public readonly mesh: THREE.Mesh;
+  private positions: Float32Array;
+  private colors: Float32Array;
+  private history: { x: number; y: number; z: number; rx: number; rz: number; r: number; g: number; b: number; w: number }[] = [];
+  private geo: THREE.BufferGeometry;
+  private mat: THREE.MeshBasicMaterial;
+  private headColor = new THREE.Color('#38bdf8');
+
+  constructor(private maxPoints = TRAIL_POINTS) {
+    this.positions = new Float32Array(maxPoints * 2 * 3);
+    this.colors = new Float32Array(maxPoints * 2 * 3);
+    const indices: number[] = [];
+    for (let i = 0; i < maxPoints - 1; i++) {
+      const a = i * 2;
+      const b = a + 1;
+      const c = a + 2;
+      const d = a + 3;
+      indices.push(a, b, c, b, d, c);
+    }
+    this.geo = new THREE.BufferGeometry();
+    this.geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+    this.geo.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
+    this.geo.setIndex(indices);
+
+    this.mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+
+    this.mesh = new THREE.Mesh(this.geo, this.mat);
+    this.mesh.frustumCulled = false;
+  }
+
+  public pushPoint(
+    active: boolean,
+    x: number,
+    y: number,
+    z: number,
+    rx: number,
+    rz: number,
+    colorHex: string,
+    halfWidth: number
+  ): void {
+    if (active) {
+      this.headColor.set(colorHex);
+      this.history.unshift({
+        x,
+        y,
+        z,
+        rx,
+        rz,
+        r: this.headColor.r,
+        g: this.headColor.g,
+        b: this.headColor.b,
+        w: halfWidth,
+      });
+      if (this.history.length > this.maxPoints) {
+        this.history.length = this.maxPoints;
+      }
+    } else if (this.history.length > 0) {
+      this.history.pop();
+    }
+
+    if (this.history.length < 2) {
+      this.mesh.visible = false;
+      return;
+    }
+
+    this.mesh.visible = true;
+    for (let i = 0; i < this.maxPoints; i++) {
+      const idx = Math.min(i, this.history.length - 1);
+      const pt = this.history[idx];
+      const fade = i < this.history.length ? Math.pow(1 - i / this.history.length, 1.45) : 0;
+      const w = pt.w * (0.25 + 0.75 * fade);
+
+      const pOff = i * 6;
+      this.positions[pOff] = pt.x - pt.rx * w;
+      this.positions[pOff + 1] = pt.y;
+      this.positions[pOff + 2] = pt.z - pt.rz * w;
+      this.positions[pOff + 3] = pt.x + pt.rx * w;
+      this.positions[pOff + 4] = pt.y;
+      this.positions[pOff + 5] = pt.z + pt.rz * w;
+
+      this.colors[pOff] = pt.r * fade;
+      this.colors[pOff + 1] = pt.g * fade;
+      this.colors[pOff + 2] = pt.b * fade;
+      this.colors[pOff + 3] = pt.r * fade;
+      this.colors[pOff + 4] = pt.g * fade;
+      this.colors[pOff + 5] = pt.b * fade;
+    }
+    this.geo.attributes.position.needsUpdate = true;
+    this.geo.attributes.color.needsUpdate = true;
+  }
+
+  public clear(): void {
+    this.history.length = 0;
+    this.mesh.visible = false;
+  }
+
+  public dispose(): void {
+    this.geo.dispose();
+    this.mat.dispose();
+  }
+}
 
 export class KartGameEngine {
   private renderer: THREE.WebGLRenderer;
@@ -138,6 +253,8 @@ export class KartGameEngine {
   private countdownValue = 3;
   private countdownTimer = 0;
   private raceElapsedMs = 0;
+  private timeTrialLimitMs = 120000;
+  private timeTrialResult: 'cleared' | 'failed' | null = null;
   private jumbotronTimer = 0;
   private hudEmitTimer = 0;
   private netSendTimer = 0;
@@ -157,9 +274,20 @@ export class KartGameEngine {
   private paddockDragActive = false;
   private paddockLastX = 0;
 
-  // Race Entities
+  // Race Entities & 3D Drift/Nitro Ribbon Trails
   private karts: KartPhysicsState[] = [];
   private kartRigs = new Map<string, KartVisualRig>();
+  private kartTrails = new Map<
+    string,
+    {
+      driftL: AdditiveRibbonTrail;
+      driftR: AdditiveRibbonTrail;
+      nitroL: AdditiveRibbonTrail;
+      nitroR: AdditiveRibbonTrail;
+      wasGrounded: boolean;
+    }
+  >();
+  private trailGroup = new THREE.Group();
   private hazards: ActiveHazard[] = [];
   private hazardGroup = new THREE.Group();
   private minimapPath: { x: number; z: number }[] = [];
@@ -188,6 +316,9 @@ export class KartGameEngine {
   // Camera & Input State
   private cameraShake = 0;
   private rearViewHeld = false;
+  private rearViewBlend = 0;
+  private camLookTarget = new THREE.Vector3();
+  private camLookInitialized = false;
   private heldKeys = new Set<string>();
   private justPressedKeys = new Set<string>();
   private touchSteer = 0;
@@ -300,8 +431,10 @@ export class KartGameEngine {
     this.textures = createProceduralTextures(maxAniso);
     const mapDef = getMapById(this.currentMapId);
     this.track = new StadiumTrack(this.textures, mapDef);
+    this.timeTrialLimitMs = mapDef.timeTrialLimitSec * 1000;
     this.scene.add(this.track.group);
     this.scene.add(this.hazardGroup);
+    this.scene.add(this.trailGroup);
     this.applyMapAtmosphere(this.currentMapId);
     this.rebuildMinimapPath();
 
@@ -456,6 +589,7 @@ export class KartGameEngine {
     this.track.dispose();
 
     const mapDef = getMapById(mapId);
+    this.timeTrialLimitMs = mapDef.timeTrialLimitSec * 1000;
     this.track = new StadiumTrack(this.textures, mapDef);
     this.scene.add(this.track.group);
     this.applyMapAtmosphere(mapId);
@@ -502,6 +636,7 @@ export class KartGameEngine {
       rig.root.rotation.y = kart.heading;
       this.scene.add(rig.root);
       this.kartRigs.set(kart.id, rig);
+      this.attachKartTrails(kart.id);
     }
 
     this.emitHudSnapshot();
@@ -639,11 +774,17 @@ export class KartGameEngine {
       rig.root.rotation.y = recreated.heading;
       this.scene.add(rig.root);
       this.kartRigs.set(recreated.id, rig);
+      this.attachKartTrails(recreated.id);
     });
 
     this.prevPlayerRank = this.karts.length;
     this.raceElapsedMs = 0;
+    this.timeTrialLimitMs = getMapById(this.currentMapId).timeTrialLimitSec * 1000;
+    this.timeTrialResult = null;
     this.cameraShake = 0;
+    this.rearViewHeld = false;
+    this.rearViewBlend = 0;
+    this.camLookInitialized = false;
     this.track.paddockGroup.visible = false;
 
     if (skipCountdown) {
@@ -666,7 +807,9 @@ export class KartGameEngine {
         pk.y + 4.5,
         pk.z - Math.cos(pk.heading) * 9.5
       );
-      this.camera.lookAt(pk.x, pk.y + 1.4, pk.z);
+      this.camLookTarget.set(pk.x, pk.y + 1.4, pk.z);
+      this.camLookInitialized = true;
+      this.camera.lookAt(this.camLookTarget);
     }
 
     this.emitHudSnapshot();
@@ -754,6 +897,10 @@ export class KartGameEngine {
     this.touchItem = triggerItem;
   }
 
+  public triggerLocalItem(): void {
+    this.justPressedKeys.add('UiItem');
+  }
+
   public applyRemoteSnapshots(
     remoteKarts: Record<string, NetKartState>,
     serverHazards: NetHazard[],
@@ -827,12 +974,35 @@ export class KartGameEngine {
     }
   }
 
+  private attachKartTrails(kartId: string): void {
+    const driftL = new AdditiveRibbonTrail();
+    const driftR = new AdditiveRibbonTrail();
+    const nitroL = new AdditiveRibbonTrail();
+    const nitroR = new AdditiveRibbonTrail();
+    this.trailGroup.add(driftL.mesh, driftR.mesh, nitroL.mesh, nitroR.mesh);
+    this.kartTrails.set(kartId, {
+      driftL,
+      driftR,
+      nitroL,
+      nitroR,
+      wasGrounded: true,
+    });
+  }
+
   private clearRaceEntities(): void {
     for (const rig of this.kartRigs.values()) {
       this.scene.remove(rig.root);
       rig.dispose();
     }
     this.kartRigs.clear();
+    for (const t of this.kartTrails.values()) {
+      this.trailGroup.remove(t.driftL.mesh, t.driftR.mesh, t.nitroL.mesh, t.nitroR.mesh);
+      t.driftL.dispose();
+      t.driftR.dispose();
+      t.nitroL.dispose();
+      t.nitroR.dispose();
+    }
+    this.kartTrails.clear();
     this.karts = [];
     for (const hz of this.hazards) {
       this.hazardGroup.remove(hz.mesh);
@@ -1045,6 +1215,9 @@ export class KartGameEngine {
     },
     onFinish: (kart) => {
       if (kart.isPlayer) {
+        if (this.gameMode === 'time_trial' && !this.mpBridge) {
+          this.timeTrialResult = 'cleared';
+        }
         this.replay.recordEvent(this.raceElapsedMs, 'finish', kart.id, `${kart.name} Finish!`);
         this.mode = 'finished';
         this.audio.playFinish();
@@ -1328,6 +1501,15 @@ export class KartGameEngine {
     if (this.mode === 'racing' || this.mode === 'finished') {
       if (this.mode === 'racing') {
         this.raceElapsedMs += dt * 1000;
+        if (isTimeTrial && playerKart && !playerKart.finished && this.raceElapsedMs >= this.timeTrialLimitMs) {
+          this.raceElapsedMs = this.timeTrialLimitMs;
+          playerKart.finished = true;
+          this.timeTrialResult = 'failed';
+          this.mode = 'finished';
+          this.audio.playFinish();
+          this.audio.setFinalLapTempo(false);
+          this.emitHudSnapshot();
+        }
       }
 
       const playerProgress = playerKart?.totalProgress ?? 0;
@@ -1383,7 +1565,7 @@ export class KartGameEngine {
 
     this.syncVisualRigs(dt, elapsed, this.mode === 'racing');
 
-    // Dynamic Chase Camera with Speed-Based FOV Widening + Decaying Shake
+    // Dynamic Chase Camera with Smooth Rear-View Swing (no sharp snap!) + Speed FOV
     if (playerKart) {
       const speedRatio = Math.max(0, playerKart.speed) / 60;
       const targetFov =
@@ -1393,11 +1575,19 @@ export class KartGameEngine {
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 7.5, dt);
       this.camera.updateProjectionMatrix();
 
-      const camDist = this.rearViewHeld ? -8.5 : 8.8;
+      // Smooth angular swing between behind-kart (0) and front-facing rear-view (1)
+      this.rearViewBlend = THREE.MathUtils.damp(
+        this.rearViewBlend,
+        this.rearViewHeld ? 1 : 0,
+        9.5,
+        dt
+      );
+      const orbitAngle = playerKart.heading + this.rearViewBlend * Math.PI;
+      const camDist = 8.8;
       const camHeight = this.mode === 'countdown' ? 4.2 : 4.35;
-      const desiredX = playerKart.x - Math.sin(playerKart.heading) * camDist;
+      const desiredX = playerKart.x - Math.sin(orbitAngle) * camDist;
       const desiredY = playerKart.y + camHeight;
-      const desiredZ = playerKart.z - Math.cos(playerKart.heading) * camDist;
+      const desiredZ = playerKart.z - Math.cos(orbitAngle) * camDist;
 
       this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, desiredX, 11, dt);
       this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, desiredY, 10, dt);
@@ -1409,12 +1599,19 @@ export class KartGameEngine {
         this.cameraShake *= Math.exp(-8 * dt);
       }
 
-      const lookAhead = this.rearViewHeld ? -5 : 7;
-      this.camera.lookAt(
-        playerKart.x + Math.sin(playerKart.heading) * lookAhead,
-        playerKart.y + 1.55,
-        playerKart.z + Math.cos(playerKart.heading) * lookAhead
-      );
+      const lookAhead = THREE.MathUtils.lerp(7, 2.5, this.rearViewBlend);
+      const tx = playerKart.x + Math.sin(orbitAngle) * lookAhead;
+      const ty = playerKart.y + 1.55;
+      const tz = playerKart.z + Math.cos(orbitAngle) * lookAhead;
+      if (!this.camLookInitialized) {
+        this.camLookTarget.set(tx, ty, tz);
+        this.camLookInitialized = true;
+      } else {
+        this.camLookTarget.x = THREE.MathUtils.damp(this.camLookTarget.x, tx, 14, dt);
+        this.camLookTarget.y = THREE.MathUtils.damp(this.camLookTarget.y, ty, 14, dt);
+        this.camLookTarget.z = THREE.MathUtils.damp(this.camLookTarget.z, tz, 14, dt);
+      }
+      this.camera.lookAt(this.camLookTarget);
 
       this.audio.updateEngine(speedRatio, playerKart.boostTimer > 0, this.mode === 'racing');
     }
@@ -1572,19 +1769,21 @@ export class KartGameEngine {
         }
       }
 
-      // Drift Sparks & Twin Rear Skid Marks
-      if (emitEffects && kart.driftDir !== 0 && kart.grounded) {
+      // Drift Sparks, Twin Rear Skid Marks & Continuous 3D Drift/Nitro Ribbon Trails
+      const driftActive = emitEffects && kart.driftDir !== 0 && kart.grounded;
+      const driftCol =
+        kart.driftLevel === 3
+          ? '#c084fc'
+          : kart.driftLevel === 2
+          ? '#fb923c'
+          : kart.driftLevel === 1
+          ? '#38bdf8'
+          : '#7dd3fc';
+
+      if (driftActive) {
         if (Math.random() < 0.65) {
           this.spawnSkidMark(kart.x, kart.y, kart.z, rig.root.rotation.y);
         }
-        const sparkCol =
-          kart.driftLevel === 3
-            ? '#c084fc'
-            : kart.driftLevel === 2
-            ? '#fb923c'
-            : kart.driftLevel === 1
-            ? '#38bdf8'
-            : '#f8fafc';
         const sparkCount = kart.driftLevel >= 2 ? 2 : 1;
         for (let s = 0; s < sparkCount; s++) {
           this.spawnParticle(
@@ -1594,11 +1793,93 @@ export class KartGameEngine {
             (Math.random() - 0.5) * 7,
             2.4 + Math.random() * 2.8,
             (Math.random() - 0.5) * 7,
-            sparkCol,
+            driftCol,
             0.65 + kart.driftLevel * 0.28,
             0.27
           );
         }
+      }
+
+      const trails = this.kartTrails.get(kart.id);
+      if (trails) {
+        const yaw = rig.root.rotation.y;
+        const rx = Math.cos(yaw);
+        const rz = -Math.sin(yaw);
+        const fx = Math.sin(yaw);
+        const fz = Math.cos(yaw);
+
+        // Landing burst particles after air jump
+        if (!trails.wasGrounded && kart.grounded && emitEffects) {
+          for (let p = 0; p < 6; p++) {
+            const ang = (p / 6) * Math.PI * 2;
+            this.spawnParticle(
+              kart.x + Math.cos(ang) * 0.9,
+              kart.y + 0.2,
+              kart.z + Math.sin(ang) * 0.9,
+              Math.cos(ang) * 5.5,
+              1.6,
+              Math.sin(ang) * 5.5,
+              '#fde68a',
+              0.85,
+              0.24
+            );
+          }
+        }
+        trails.wasGrounded = kart.grounded;
+
+        // Rear tire positions for Drift Trails
+        const tireBack = 0.88;
+        const tireHalf = 0.72;
+        trails.driftL.pushPoint(
+          driftActive,
+          kart.x - fx * tireBack - rx * tireHalf,
+          kart.y + 0.14,
+          kart.z - fz * tireBack - rz * tireHalf,
+          rx,
+          rz,
+          driftCol,
+          0.18 + kart.driftLevel * 0.05
+        );
+        trails.driftR.pushPoint(
+          driftActive,
+          kart.x - fx * tireBack + rx * tireHalf,
+          kart.y + 0.14,
+          kart.z - fz * tireBack + rz * tireHalf,
+          rx,
+          rz,
+          driftCol,
+          0.18 + kart.driftLevel * 0.05
+        );
+
+        // Exhaust pipe tips for continuous 3D Nitro Trails
+        const nitroActive = emitEffects && boosting;
+        const tL = rig.exhaustTips[0] ?? this._tmpV3.set(-0.34, 0.74, -1.28);
+        const tR = rig.exhaustTips[1] ?? this._tmpV3B.set(0.34, 0.74, -1.28);
+        const pLx = kart.x + tL.z * fx + tL.x * rx;
+        const pLz = kart.z + tL.z * fz + tL.x * rz;
+        const pRx = kart.x + tR.z * fx + tR.x * rx;
+        const pRz = kart.z + tR.z * fz + tR.x * rz;
+
+        trails.nitroL.pushPoint(
+          nitroActive,
+          pLx,
+          kart.y + kart.hopY + tL.y,
+          pLz,
+          rx,
+          rz,
+          flameCol,
+          isLv3 ? 0.28 : 0.22
+        );
+        trails.nitroR.pushPoint(
+          nitroActive,
+          pRx,
+          kart.y + kart.hopY + tR.y,
+          pRz,
+          rx,
+          rz,
+          flameCol,
+          isLv3 ? 0.28 : 0.22
+        );
       }
     }
   }
@@ -1777,6 +2058,8 @@ export class KartGameEngine {
     // Always keep gamepad connection status updated, but ONLY read driving input from the active exclusive ControlMode
     const pad = this.pollGamepad(this.controlMode === 'controller');
 
+    const uiItem = this.justPressedKeys.has('UiItem');
+
     switch (this.controlMode) {
       case 'keyboard': {
         const left = this.heldKeys.has('KeyA') || this.heldKeys.has('ArrowLeft');
@@ -1788,6 +2071,8 @@ export class KartGameEngine {
         const hopJustPressed =
           this.justPressedKeys.has('Space') || this.justPressedKeys.has('ShiftLeft');
         const useItemJustPressed =
+          uiItem ||
+          this.justPressedKeys.has('KeyX') ||
           this.justPressedKeys.has('KeyE') ||
           this.justPressedKeys.has('KeyF') ||
           this.justPressedKeys.has('Enter');
@@ -1801,7 +2086,11 @@ export class KartGameEngine {
         const hop = this.mouseRightDown;
         const hopJustPressed = this.mouseRightJustPressed;
         const useItemJustPressed =
-          this.mouseItemJustPressed || this.justPressedKeys.has('KeyE') || this.justPressedKeys.has('Space');
+          uiItem ||
+          this.mouseItemJustPressed ||
+          this.justPressedKeys.has('KeyX') ||
+          this.justPressedKeys.has('KeyE') ||
+          this.justPressedKeys.has('Space');
         return {
           throttle,
           brake,
@@ -1823,7 +2112,7 @@ export class KartGameEngine {
           steerAnalog: pad.steerAnalog,
           hop: pad.hop,
           hopJustPressed: pad.hopJustPressed,
-          useItemJustPressed: pad.useItemJustPressed,
+          useItemJustPressed: uiItem || pad.useItemJustPressed,
         };
       }
 
@@ -1838,7 +2127,7 @@ export class KartGameEngine {
           steerAnalog: steer,
           hop: this.touchDrift,
           hopJustPressed: this.justPressedKeys.has('TouchDrift'),
-          useItemJustPressed: this.justPressedKeys.has('TouchItem'),
+          useItemJustPressed: uiItem || this.justPressedKeys.has('TouchItem'),
         };
       }
     }
@@ -1861,6 +2150,10 @@ export class KartGameEngine {
         isPlayer: k.isPlayer,
       }));
 
+    const isTT = this.gameMode === 'time_trial' && !this.mpBridge;
+    const ttLimit = isTT ? this.timeTrialLimitMs : 0;
+    const ttRem = isTT ? Math.max(0, ttLimit - this.raceElapsedMs) : 0;
+
     this.onHudUpdate({
       mode: this.mode,
       gameMode: this.gameMode,
@@ -1878,6 +2171,10 @@ export class KartGameEngine {
       boostCallout: this.activeBoostCallout,
       countdownValue: this.countdownValue,
       raceTimeMs: this.raceElapsedMs,
+      totalLaps: 3,
+      timeLimitMs: ttLimit,
+      timeRemainingMs: ttRem,
+      timeTrialResult: this.timeTrialResult,
       standings: sorted,
       minimapPoints: this.minimapPath,
       minimapRacers: this.karts.map((k) => ({

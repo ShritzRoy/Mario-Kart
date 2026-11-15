@@ -22,7 +22,6 @@ import {
   Pause,
   Play,
   RotateCcw,
-  Settings,
   Smartphone,
   Sparkles,
   Sun,
@@ -36,15 +35,9 @@ import {
   X,
 } from 'lucide-react';
 import { CharacterPortrait } from './components/CharacterPortrait.tsx';
-import {
-  CircularAbilityWheel,
-  ItemSvgIcon,
-  itemVisual,
-  type DeviceTier,
-} from './components/CircularAbilityWheel.tsx';
+import { CircularAbilityWheel, type DeviceTier } from './components/CircularAbilityWheel.tsx';
 import { MiniMap } from './components/MiniMap.tsx';
 import { MobileControls } from './components/MobileControls.tsx';
-import { NintendoSettingsModal } from './components/NintendoSettingsModal.tsx';
 import { PixelFlagTransition } from './components/PixelFlagTransition.tsx';
 import { SpeedometerGauge } from './components/SpeedometerGauge.tsx';
 import { VehicleCardIcon } from './components/VehicleCardIcon.tsx';
@@ -56,28 +49,22 @@ import {
   type HudSnapshot,
 } from './game/engine.ts';
 import { MAPS, WEATHER_OPTIONS, type MapId, type WeatherChoice } from './game/maps.ts';
-import { getRacerById, getRacerWithVariant, ROSTER, type WeightClass } from './game/roster.ts';
+import { getRacerById, ROSTER, type WeightClass } from './game/roster.ts';
 import { getVehicleById, VEHICLES, type VehicleId } from './game/vehicles.ts';
 import { useMultiplayerRoom } from './hooks/useMultiplayerRoom.ts';
-import type { HitNoticeKind, NetRoomSnapshot } from './shared/protocol.ts';
+import type { NetRoomSnapshot } from './shared/protocol.ts';
 
 type FilterTab = 'All' | WeightClass;
 
 const INITIAL_HUD: HudSnapshot = {
   mode: 'title',
   paddockStage: 'character',
-  selectedVariantId: 'classic',
   selectedVehicleId: 'standard_kart',
   gameMode: 'grand_prix',
   mapId: 'plaza',
   weatherChoice: 'sunny',
   activeWeather: 'sunny',
   controlMode: 'keyboard',
-  smartSteering: true,
-  autoAccel: false,
-  autoUseItem: false,
-  cameraTilt: true,
-  soundMuted: false,
   rank: 1,
   totalRacers: 8,
   lap: 1,
@@ -175,7 +162,6 @@ export default function App() {
 
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [selectedId, setSelectedId] = useState<string>('mario');
-  const [selectedVariantId, setSelectedVariantId] = useState<string>('classic');
   const [selectedVehicleId, setSelectedVehicleId] = useState<VehicleId>('standard_kart');
   const [vehiclePage, setVehiclePage] = useState<0 | 1>(0);
   const [selectedMap, setSelectedMap] = useState<MapId>('plaza');
@@ -186,20 +172,16 @@ export default function App() {
   const [flagActive, setFlagActive] = useState<boolean>(false);
   const [hoveredTitleMode, setHoveredTitleMode] = useState<GameModeType>('grand_prix');
   const [onlineModalOpen, setOnlineModalOpen] = useState<boolean>(false);
-  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [screenFading, setScreenFading] = useState<boolean>(false);
 
-  // Exclusive Cross-Device Controls, Assists & Fullscreen State
+  // Exclusive Cross-Device Controls & Fullscreen / Landscape State
   const [controlMode, setControlMode] = useState<ControlMode>(() => {
     if (typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
       return 'mobile_buttons';
     }
     return 'keyboard';
   });
-  const [smartSteering, setSmartSteering] = useState<boolean>(true);
   const [autoAccel, setAutoAccel] = useState<boolean>(false);
-  const [autoUseItem, setAutoUseItem] = useState<boolean>(false);
-  const [cameraTilt, setCameraTilt] = useState<boolean>(true);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isPortraitMobile, setIsPortraitMobile] = useState<boolean>(false);
   const [isCompactViewport, setIsCompactViewport] = useState<boolean>(false);
@@ -213,14 +195,7 @@ export default function App() {
   const pendingFlagActionRef = useRef<
     | {
         type: 'race';
-        remotePlayers: {
-          id: string;
-          name: string;
-          characterId: string;
-          variantId?: string;
-          vehicleId?: string;
-          slotIndex: number;
-        }[];
+        remotePlayers: { id: string; name: string; characterId: string; vehicleId?: string; slotIndex: number }[];
         gameMode: GameModeType;
       }
     | { type: 'paddock' }
@@ -228,10 +203,7 @@ export default function App() {
     | null
   >(null);
 
-  const selectedSpec = useMemo(
-    () => getRacerWithVariant(selectedId, selectedVariantId),
-    [selectedId, selectedVariantId]
-  );
+  const selectedSpec = useMemo(() => getRacerById(selectedId), [selectedId]);
   const selectedVehicle = useMemo(() => getVehicleById(selectedVehicleId), [selectedVehicleId]);
   const combinedBars = useMemo(() => {
     const clampBar = (base100: number, delta: number) =>
@@ -256,24 +228,6 @@ export default function App() {
     const engine = engineRef.current;
     if (!engine) return;
 
-    if (room.mapId && (['plaza', 'stadium', 'meadow', 'skyline'] as string[]).includes(room.mapId)) {
-      const mId = room.mapId as MapId;
-      setSelectedMap((prev) => {
-        if (prev !== mId) engine.loadMap(mId);
-        return mId;
-      });
-    }
-    if (
-      room.weatherChoice &&
-      (['sunny', 'sunset', 'rainy', 'night', 'dynamic'] as string[]).includes(room.weatherChoice)
-    ) {
-      const wId = room.weatherChoice as WeatherChoice;
-      setSelectedWeather((prev) => {
-        if (prev !== wId) engine.setWeather(wId);
-        return wId;
-      });
-    }
-
     if (room.phase === 'countdown' && !mpStartTriggeredRef.current) {
       mpStartTriggeredRef.current = true;
       setOnlineModalOpen(false);
@@ -283,7 +237,6 @@ export default function App() {
           id: p.id,
           name: p.name,
           characterId: p.characterId,
-          variantId: p.variantId,
           vehicleId: p.vehicleId,
           slotIndex: p.slotIndex,
         })),
@@ -300,7 +253,7 @@ export default function App() {
   }, []);
 
   const handleHitNotice = useCallback(
-    (targetId: string, _attackerId: string, kind: HitNoticeKind) => {
+    (targetId: string, _attackerId: string, kind: 'shell' | 'banana' | 'star') => {
       engineRef.current?.applyRemoteHit(targetId, kind);
     },
     []
@@ -318,10 +271,6 @@ export default function App() {
       setHud(snap);
     });
     engine.setControlMode(controlMode);
-    engine.setSmartSteering(smartSteering);
-    engine.setAutoAccel(autoAccel);
-    engine.setAutoUseItem(autoUseItem);
-    engine.setCameraTilt(cameraTilt);
     engineRef.current = engine;
 
     const params = new URLSearchParams(window.location.search);
@@ -332,7 +281,7 @@ export default function App() {
       engine.setGameMode('online_room');
       engine.enterPaddock('character');
       setOnlineModalOpen(true);
-      mp.joinRoom(clean, 'MobileRacer', 'mario', 'standard_kart', 'classic');
+      mp.joinRoom(clean, 'MobileRacer', 'mario', 'standard_kart');
     }
 
     return () => {
@@ -359,26 +308,14 @@ export default function App() {
     }
   }, [mp.connected, mp.playerId, mp.sendKartState, mp.spawnHazard, mp.removeHazard, mp.hitPlayer]);
 
-  // Sync exclusive ControlMode & Gameplay Assists
+  // Sync exclusive ControlMode & Auto-Accel
   useEffect(() => {
     engineRef.current?.setControlMode(controlMode);
   }, [controlMode]);
 
   useEffect(() => {
-    engineRef.current?.setSmartSteering(smartSteering);
-  }, [smartSteering]);
-
-  useEffect(() => {
     engineRef.current?.setAutoAccel(autoAccel);
   }, [autoAccel]);
-
-  useEffect(() => {
-    engineRef.current?.setAutoUseItem(autoUseItem);
-  }, [autoUseItem]);
-
-  useEffect(() => {
-    engineRef.current?.setCameraTilt(cameraTilt);
-  }, [cameraTilt]);
 
   // Track Portrait vs Landscape + Device Tier + Fullscreen State
   useEffect(() => {
@@ -432,8 +369,7 @@ export default function App() {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       if (e.code === 'Escape') {
-        if (settingsOpen) setSettingsOpen(false);
-        else if (hud.mode === 'racing') engineRef.current?.setPaused(true);
+        if (hud.mode === 'racing') engineRef.current?.setPaused(true);
         else if (hud.mode === 'paused') engineRef.current?.setPaused(false);
         else if (onlineModalOpen) setOnlineModalOpen(false);
       } else if (e.code === 'KeyH' && hud.mode === 'paddock') {
@@ -443,8 +379,7 @@ export default function App() {
         hud.mode === 'paddock' &&
         !flagActive &&
         !mp.room &&
-        !onlineModalOpen &&
-        !settingsOpen
+        !onlineModalOpen
       ) {
         if (hud.paddockStage === 'character') {
           engineRef.current?.audio.playSelect();
@@ -461,7 +396,7 @@ export default function App() {
   // Gamepad Paddock Grid Navigation
   const padNavCooldownRef = useRef(0);
   useEffect(() => {
-    if (hud.mode !== 'paddock' || flagActive || onlineModalOpen || settingsOpen) return;
+    if (hud.mode !== 'paddock' || flagActive || onlineModalOpen) return;
     let rafId = 0;
     const pollMenuPad = (now: number) => {
       const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -520,19 +455,9 @@ export default function App() {
 
   const handleSelectCharacter = (id: string) => {
     setSelectedId(id);
-    setSelectedVariantId('classic');
-    engineRef.current?.selectPaddockVariant('classic', false);
     engineRef.current?.selectPaddockCharacter(id, true);
     if (mp.connected) {
-      mp.selectCharacter(id, 'classic');
-    }
-  };
-
-  const handleSelectVariant = (variantId: string) => {
-    setSelectedVariantId(variantId);
-    engineRef.current?.selectPaddockVariant(variantId, true);
-    if (mp.connected) {
-      mp.selectCharacter(selectedId, variantId);
+      mp.selectCharacter(id);
     }
   };
 
@@ -548,18 +473,12 @@ export default function App() {
     setSelectedMap(mapId);
     engineRef.current?.loadMap(mapId);
     engineRef.current?.audio.playSelect();
-    if (mp.connected && localRoomPlayer?.isHost) {
-      mp.setCourse(mapId, selectedWeather);
-    }
   };
 
   const handleSelectWeather = (w: WeatherChoice) => {
     setSelectedWeather(w);
     engineRef.current?.setWeather(w);
     engineRef.current?.audio.playSelect();
-    if (mp.connected && localRoomPlayer?.isHost) {
-      mp.setCourse(selectedMap, w);
-    }
   };
 
   const handleSelectTitleMode = (gm: GameModeType) => {
@@ -578,13 +497,12 @@ export default function App() {
     }
   };
 
-  const applyMuted = (nextMuted: boolean) => {
-    setMuted(nextMuted);
+  const toggleMute = () => {
+    const next = !muted;
+    setMuted(next);
     engineRef.current?.audio.init();
-    engineRef.current?.setSoundMuted(nextMuted);
+    engineRef.current?.audio.setMuted(next);
   };
-
-  const toggleMute = () => applyMuted(!muted);
 
   const triggerSoloRace = () => {
     engineRef.current?.audio.init();
@@ -599,14 +517,14 @@ export default function App() {
   const handleCreateRoom = () => {
     const code = generateRoomCode();
     setRoomCodeInput(code);
-    mp.joinRoom(code, playerName || 'Host', selectedId, selectedVehicleId, selectedVariantId);
+    mp.joinRoom(code, playerName || 'Host', selectedId, selectedVehicleId);
   };
 
   const handleJoinCode = () => {
     const code = (roomCodeInput || 'MK88').toUpperCase().trim();
     if (!code) return;
     setRoomCodeInput(code);
-    mp.joinRoom(code, playerName || 'Driver', selectedId, selectedVehicleId, selectedVariantId);
+    mp.joinRoom(code, playerName || 'Driver', selectedId, selectedVehicleId);
   };
 
   const copyRoomInvite = () => {
@@ -627,8 +545,7 @@ export default function App() {
         action.remotePlayers,
         false,
         action.gameMode,
-        selectedVehicleId,
-        selectedVariantId
+        selectedVehicleId
       );
     } else if (action.type === 'paddock') {
       engineRef.current.returnToPaddock();
@@ -636,7 +553,7 @@ export default function App() {
       engineRef.current.returnToTitle();
     }
     pendingFlagActionRef.current = null;
-  }, [selectedId, selectedVariantId, selectedVehicleId, playerName]);
+  }, [selectedId, selectedVehicleId, playerName]);
 
   const handleFlagComplete = useCallback(() => {
     setFlagActive(false);
@@ -651,7 +568,6 @@ export default function App() {
   const handleReturnToTitle = () => {
     mpStartTriggeredRef.current = false;
     setOnlineModalOpen(false);
-    setSettingsOpen(false);
     pendingFlagActionRef.current = { type: 'title' };
     setFlagActive(true);
   };
@@ -663,7 +579,7 @@ export default function App() {
   const minimapSize = deviceTier === 'mobile' ? 82 : deviceTier === 'tablet' ? 112 : 140;
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#0284c7] text-white select-none font-mk">
+    <div className="relative w-screen h-screen overflow-hidden bg-[#0284c7] text-white select-none font-sans">
       {/* Dedicated Isolated WebGL Canvas Mount */}
       <div ref={mountRef} className="absolute inset-0 w-full h-full" />
 
@@ -787,14 +703,6 @@ export default function App() {
             </div>
 
             <div className="pointer-events-auto flex items-center gap-2 shrink-0">
-              <button
-                onClick={() => setSettingsOpen(true)}
-                title="Nintendo Settings"
-                className="p-2 sm:p-2.5 rounded-xl border border-white/25 hover:border-amber-300/80 transition cursor-pointer"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)' }}
-              >
-                <Settings className="w-4 h-4 text-amber-300" />
-              </button>
               <button
                 onClick={enterLandscapeFullscreen}
                 title="Landscape Fullscreen"
@@ -955,15 +863,6 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setSettingsOpen(true)}
-                title="Settings"
-                className="p-2 rounded-xl border border-white/30 hover:border-amber-300/80 transition cursor-pointer"
-                style={{ backgroundColor: 'rgba(10, 15, 28, 0.3)' }}
-              >
-                <Settings className="w-4 h-4 text-amber-300" />
-              </button>
-
-              <button
                 onClick={enterLandscapeFullscreen}
                 title="Landscape Fullscreen"
                 className="p-2 rounded-xl border border-white/30 hover:border-white/70 transition cursor-pointer"
@@ -1000,169 +899,17 @@ export default function App() {
             </div>
           </div>
 
-          {/* ===== STAGE 1: IMPROVISED MARIO KART CHARACTER SELECTION (IMAGE_F22C807C + INVISIBLE TOUCH SCROLL) ===== */}
+          {/* ===== STAGE 1: TRANSPARENT FLOATING CHARACTER SELECTION ===== */}
           {paddockUiVisible && hud.paddockStage === 'character' && (
-            <div className="my-auto flex flex-col md:flex-row items-center md:items-stretch justify-end md:justify-between gap-2.5 min-h-0 flex-1 py-1">
-              {/* LEFT: Floating Transparent Character Bio, Special Item Badge & Outfit Variations */}
+            <div className="my-auto flex flex-col md:flex-row items-center md:items-center justify-end md:justify-between gap-2 min-h-0 flex-1 py-1">
               <div
-                className={`pointer-events-auto no-scrollbar touch-pan-y overscroll-contain overflow-y-auto flex flex-col justify-between gap-2 ${
+                className={`pointer-events-auto w-full overflow-y-auto pr-1 space-y-2 ${
                   deviceTier === 'mobile'
-                    ? 'hidden'
-                    : 'w-full md:w-[375px] lg:w-[410px] max-h-[calc(100vh-145px)]'
+                    ? 'mt-auto max-w-[360px] max-h-[44vh]'
+                    : 'md:w-[445px] lg:w-[475px] max-h-[calc(100vh-145px)]'
                 }`}
               >
-                <div className="space-y-2">
-                  {/* "Choose Your Racer!" Header */}
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="font-mk text-2xl lg:text-3xl italic tracking-tight text-amber-300 mk-stroke">
-                      Choose Your Racer!
-                    </h2>
-                  </div>
-
-                  {/* Character Nameplate + Bio + Special Item Card */}
-                  <div
-                    className="rounded-3xl border-2 border-white/30 p-3.5 space-y-2.5 shadow-2xl"
-                    style={{ backgroundColor: 'rgba(9, 15, 32, 0.42)' }}
-                  >
-                    <div className="flex items-start justify-between gap-2.5">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mk text-2xl uppercase tracking-wide text-white mk-stroke-sm">
-                            {selectedSpec.name}
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] uppercase tracking-wider">
-                            {selectedSpec.weightClass}
-                          </span>
-                        </div>
-                        <div className="font-mk text-xs text-cyan-300 mk-stroke-sm">
-                          {selectedSpec.title} · {selectedSpec.activeVariant.label}
-                        </div>
-                      </div>
-
-                      {/* Special Item Showcase Circle (Image F22C807C style) */}
-                      <div className="flex flex-col items-center shrink-0">
-                        <div
-                          className="w-12 h-12 rounded-full border-2 border-white/80 flex items-center justify-center shadow-lg"
-                          style={{ backgroundColor: `${itemVisual(selectedSpec.specialItem).color}55` }}
-                          title={itemVisual(selectedSpec.specialItem).name}
-                        >
-                          <ItemSvgIcon item={selectedSpec.specialItem} iconSize={30} />
-                        </div>
-                        <span className="text-[9px] uppercase text-amber-200 mt-0.5 mk-stroke-sm">
-                          Special Item
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* 2-Paragraph Bio Description */}
-                    <div className="space-y-1.5 text-xs leading-relaxed text-slate-100/95">
-                      <p>{selectedSpec.bio[0]}</p>
-                      <p className="text-amber-200/95">{selectedSpec.bio[1]}</p>
-                    </div>
-
-                    {/* Outfit / Color Variations Strip */}
-                    <div className="pt-1 border-t border-white/15">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[10px] uppercase tracking-wider text-sky-300 mk-stroke-sm">
-                          Color Variations
-                        </span>
-                        <span className="text-[10px] text-amber-300 mk-stroke-sm">
-                          {selectedSpec.activeVariant.label}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {selectedSpec.variants.map((v) => {
-                          const vActive = selectedSpec.activeVariant.id === v.id;
-                          return (
-                            <button
-                              key={v.id}
-                              onClick={() => handleSelectVariant(v.id)}
-                              title={v.label}
-                              className={`relative w-8 h-8 rounded-full border-2 transition cursor-pointer flex items-center justify-center ${
-                                vActive
-                                  ? 'scale-110 border-white shadow-[0_0_12px_rgba(250,204,21,0.85)]'
-                                  : 'border-white/40 hover:scale-105 opacity-85 hover:opacity-100'
-                              }`}
-                              style={{
-                                background: `linear-gradient(135deg, ${v.primaryColor} 55%, ${v.outfitColor} 55%)`,
-                              }}
-                            >
-                              {vActive && <span className="w-2 h-2 rounded-full bg-white shadow" />}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Minimal Compact Stat Bars */}
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 pt-1">
-                      {[
-                        { label: 'SPD', val: selectedSpec.stats.topSpeed, col: '#ef4444' },
-                        { label: 'ACC', val: selectedSpec.stats.acceleration, col: '#38bdf8' },
-                        { label: 'HND', val: selectedSpec.stats.handling, col: '#22c55e' },
-                        { label: 'WGT', val: selectedSpec.stats.weight, col: '#facc15' },
-                      ].map((st) => (
-                        <div key={st.label} className="flex items-center gap-1.5 text-[10px]">
-                          <span className="w-7 text-white/95">{st.label}</span>
-                          <div className="flex-1 h-1.5 rounded-full bg-black/50 overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-300"
-                              style={{ width: `${st.val}%`, backgroundColor: st.col }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* RIGHT / MOBILE-BOTTOM: Floating Roster Grid + Mobile Compact Bio/Variants (Zero Visible Scrollbar!) */}
-              <div
-                className={`pointer-events-auto no-scrollbar touch-pan-y overscroll-contain overflow-y-auto space-y-2 flex flex-col justify-end md:justify-center ${
-                  deviceTier === 'mobile'
-                    ? 'mt-auto w-full max-w-[400px] max-h-[48vh]'
-                    : 'w-full md:w-[405px] lg:w-[435px] max-h-[calc(100vh-145px)]'
-                }`}
-              >
-                {/* Mobile Compact Header + Variations Strip */}
-                <div
-                  className="md:hidden rounded-2xl px-3 py-2 border border-white/25 space-y-1.5"
-                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.42)' }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="font-mk text-sm uppercase text-amber-300 mk-stroke-sm truncate">
-                        {selectedSpec.name}
-                      </span>
-                      <span className="text-[10px] text-cyan-300 truncate">
-                        {selectedSpec.activeVariant.label}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {selectedSpec.variants.map((v) => (
-                        <button
-                          key={v.id}
-                          onClick={() => handleSelectVariant(v.id)}
-                          title={v.label}
-                          className={`w-5 h-5 rounded-full border transition cursor-pointer ${
-                            selectedSpec.activeVariant.id === v.id
-                              ? 'scale-110 border-white shadow'
-                              : 'border-white/40 opacity-80'
-                          }`}
-                          style={{
-                            background: `linear-gradient(135deg, ${v.primaryColor} 55%, ${v.outfitColor} 55%)`,
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <p className="text-[10px] leading-snug text-slate-100/90 line-clamp-2">
-                    {selectedSpec.bio[0]}
-                  </p>
-                </div>
-
-                {/* Weight Class Filter Tabs */}
+                {/* Floating Weight Class Filter Tabs */}
                 <div className="flex flex-wrap items-center justify-between gap-1.5">
                   <div className="flex flex-wrap gap-1">
                     {(['All', 'All-Around', 'Lightweight', 'Heavyweight'] as FilterTab[]).map((tab) => (
@@ -1179,12 +926,12 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                  <span className="hidden sm:inline font-mk text-[11px] uppercase tracking-wider text-amber-300 mk-stroke-sm">
-                    {filteredRoster.length} Drivers
+                  <span className="font-mk text-[11px] uppercase tracking-wider text-amber-300 mk-stroke-sm">
+                    {selectedSpec.weightClass}
                   </span>
                 </div>
 
-                {/* Transparent Floating Roster Grid */}
+                {/* Truly Transparent Floating 6-Column Portrait Grid */}
                 <div className="grid grid-cols-6 gap-1.5">
                   {filteredRoster.map((racer) => {
                     const active = racer.id === selectedId;
@@ -1195,28 +942,81 @@ export default function App() {
                         title={`${racer.name} (${racer.weightClass})`}
                         className={`relative aspect-square rounded-xl border flex items-center justify-center p-1 transition cursor-pointer overflow-hidden ${
                           active
-                            ? 'scale-105 border-amber-300 bg-white/22 shadow-[0_0_14px_rgba(250,204,21,0.75)]'
-                            : 'border-white/20 bg-slate-950/24 hover:bg-white/12 hover:border-white/55 hover:scale-105'
+                            ? 'scale-105 border-amber-300 bg-white/18 shadow-[0_0_14px_rgba(250,204,21,0.75)]'
+                            : 'border-white/20 bg-slate-950/20 hover:bg-white/10 hover:border-white/55 hover:scale-105'
                         }`}
                       >
                         <WhiteFlagButtonWave active={active} compact />
                         <div className="relative z-10 drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
-                          <CharacterPortrait spec={racer} size={isCompactViewport ? 28 : 42} />
+                          <CharacterPortrait spec={racer} size={isCompactViewport ? 30 : 42} />
                         </div>
                       </button>
                     );
                   })}
                 </div>
+
+                {/* Minimal Transparent Character Name + Stat Bars */}
+                <div
+                  className="rounded-xl px-3 py-2 border border-white/25 flex flex-wrap items-center justify-between gap-x-3 gap-y-1"
+                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.28)' }}
+                >
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="font-mk text-sm sm:text-base uppercase tracking-wide text-amber-300 mk-stroke-sm truncate">
+                      {selectedSpec.name}
+                    </span>
+                    <span className="font-mk text-[10px] text-rose-300 mk-stroke-sm truncate">
+                      {selectedSpec.title}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    {[
+                      { label: 'SPD', val: selectedSpec.stats.topSpeed, col: '#ef4444' },
+                      { label: 'ACC', val: selectedSpec.stats.acceleration, col: '#38bdf8' },
+                      { label: 'HND', val: selectedSpec.stats.handling, col: '#22c55e' },
+                      { label: 'WGT', val: selectedSpec.stats.weight, col: '#facc15' },
+                    ].map((st) => (
+                      <div key={st.label} className="flex items-center gap-1 text-[9px] font-hud">
+                        <span className="font-bold text-white/95">{st.label}</span>
+                        <div className="w-8 sm:w-10 h-1.5 rounded-full bg-black/50 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-300"
+                            style={{ width: `${st.val}%`, backgroundColor: st.col }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Showcase Nameplate (Desktop shows beside centered-right 3D kart) */}
+              <div className="hidden md:flex flex-col items-end justify-end self-stretch pb-4 pr-2">
+                <div
+                  className="px-4 py-1.5 mb-2 font-mk text-xl uppercase tracking-wider text-slate-950 shadow-xl border-2 border-white"
+                  style={{
+                    background: 'linear-gradient(90deg, #facc15, #fde047)',
+                    clipPath: 'polygon(6% 0%, 100% 0%, 94% 100%, 0% 100%)',
+                  }}
+                >
+                  Characters
+                </div>
+                <div className="flex-1" />
+                <div
+                  className="px-6 py-2 rounded-2xl border border-white/25 font-mk text-xl uppercase tracking-wide text-amber-300 mk-stroke-sm"
+                  style={{ backgroundColor: 'rgba(15, 23, 42, 0.72)' }}
+                >
+                  {selectedSpec.name} <span className="text-sky-300 text-sm">· {selectedVehicle.name}</span>
+                </div>
               </div>
             </div>
           )}
 
-          {/* ===== STAGE 2: VEHICLE GARAGE SELECTION ===== */}
+          {/* ===== STAGE 2: VEHICLE GARAGE SELECTION (MATCHING REFERENCE IMAGE 1) ===== */}
           {paddockUiVisible && hud.paddockStage === 'vehicle' && (
             <div className="my-auto flex flex-col md:flex-row items-center md:items-stretch justify-end md:justify-between gap-3 min-h-0 flex-1 py-1">
               {/* LEFT: 4-Column Vehicle Grid with Rounded Golden Corner Brackets & Page Arrows */}
               <div
-                className={`pointer-events-auto no-scrollbar touch-pan-y overscroll-contain flex flex-col justify-center gap-2 ${
+                className={`pointer-events-auto flex flex-col justify-center gap-2 ${
                   deviceTier === 'mobile'
                     ? 'mt-auto w-full max-w-[390px] max-h-[46vh] overflow-y-auto'
                     : 'w-full md:w-[54%] max-w-[560px]'
@@ -1235,7 +1035,7 @@ export default function App() {
                       {selectedVehicle.category}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0 text-[8px] font-mk text-white">
+                  <div className="flex items-center gap-1.5 shrink-0 text-[8px] font-hud text-white">
                     <span>SPD {combinedBars.speed}</span>
                     <span>ACC {combinedBars.acceleration}</span>
                     <span>WGT {combinedBars.weight}</span>
@@ -1736,14 +1536,6 @@ export default function App() {
                     <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
                   <button
-                    onClick={() => setSettingsOpen(true)}
-                    className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-amber-300/70 cursor-pointer"
-                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
-                    title="Nintendo Settings"
-                  >
-                    <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-300" />
-                  </button>
-                  <button
                     onClick={enterLandscapeFullscreen}
                     className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
                     style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
@@ -1798,6 +1590,22 @@ export default function App() {
                 </span>
               </div>
             )}
+
+            {/* Bottom Perimeter: Active Desktop Control Hint (Bottom-Left) */}
+            <div className="flex items-end justify-between gap-4">
+              {hud.controlMode !== 'mobile_buttons' && hud.controlMode !== 'mobile_joystick' && (
+                <div
+                  className="hidden md:flex items-center gap-2 rounded-xl border border-white/15 px-3 py-1.5 font-hud text-[10px] font-bold uppercase tracking-wider text-slate-300"
+                  style={{ backgroundColor: 'rgba(10, 15, 28, 0.72)' }}
+                >
+                  {hud.controlMode === 'mouse'
+                    ? 'Mouse Steer · L-Click Gas · R-Click Drift · X / E Item'
+                    : hud.controlMode === 'controller'
+                    ? 'Controller · A/RT Gas · RB Drift · X/Y Item'
+                    : 'WASD/Arrows · Space Drift · X / E Item · C Rear'}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Transparent Bottom-Middle MiniMap */}
@@ -1957,7 +1765,7 @@ export default function App() {
               <Gamepad2 className="w-6 h-6 text-slate-500 shrink-0" />
             </div>
 
-            <div className="space-y-2 max-h-[46vh] overflow-y-auto no-scrollbar pr-1">
+            <div className="space-y-2 max-h-[46vh] overflow-y-auto pr-1">
               {hud.standings.map((row) => {
                 const racerSpec = getRacerById(row.characterId);
                 const vehSpec = getVehicleById(row.vehicleId);
@@ -2011,22 +1819,13 @@ export default function App() {
 
             <div className="flex flex-wrap gap-2.5">
               {hud.mode === 'paused' ? (
-                <>
-                  <button
-                    onClick={() => engineRef.current?.setPaused(false)}
-                    className="flex-1 py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Play className="w-4 h-4" />
-                    <span>Resume</span>
-                  </button>
-                  <button
-                    onClick={() => setSettingsOpen(true)}
-                    className="px-4 py-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Settings className="w-4 h-4" />
-                    <span>Settings</span>
-                  </button>
-                </>
+                <button
+                  onClick={() => engineRef.current?.setPaused(false)}
+                  className="flex-1 py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Play className="w-4 h-4" />
+                  <span>Resume</span>
+                </button>
               ) : (
                 <>
                   {hud.hasReplay && (
@@ -2065,26 +1864,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      {/* ==================== 6. NINTENDO SETTINGS MODAL ==================== */}
-      <NintendoSettingsModal
-        open={settingsOpen}
-        smartSteering={smartSteering}
-        autoAccel={autoAccel}
-        autoUseItem={autoUseItem}
-        controlMode={controlMode}
-        cameraTilt={cameraTilt}
-        soundMuted={muted}
-        onChangeSmartSteering={setSmartSteering}
-        onChangeAutoAccel={setAutoAccel}
-        onChangeAutoUseItem={setAutoUseItem}
-        onChangeControlMode={setControlMode}
-        onChangeCameraTilt={setCameraTilt}
-        onChangeSoundMuted={applyMuted}
-        onReturnHome={handleReturnToTitle}
-        onClose={() => setSettingsOpen(false)}
-        onPlaySelect={() => engineRef.current?.audio.playSelect()}
-      />
     </div>
   );
 }

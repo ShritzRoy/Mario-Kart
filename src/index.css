@@ -2,17 +2,8 @@
 
 @layer base {
   body {
-    font-family: 'Fredoka', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   }
-}
-
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
 }
 
 .font-arcade {
@@ -50,7 +41,7 @@
 }
 
 .font-hud {
-  font-family: 'Fredoka', 'Chakra Petch', system-ui, sans-serif;
+  font-family: 'Chakra Petch', system-ui, sans-serif;
 }
 
 @keyframes whiteFlagFlutter {

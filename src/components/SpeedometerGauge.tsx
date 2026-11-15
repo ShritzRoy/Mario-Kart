@@ -131,7 +131,7 @@ export function SpeedometerGauge({
               fill="#f1f5f9"
               fontSize="9.5"
               fontWeight="800"
-              fontFamily="'Fredoka', sans-serif"
+              fontFamily="'Chakra Petch', sans-serif"
             >
               {val}
             </text>
@@ -155,7 +155,7 @@ export function SpeedometerGauge({
           fill={starActive ? '#fde047' : boostActive ? '#fb923c' : '#e2e8f0'}
           fontSize="12.5"
           fontWeight="900"
-          fontFamily="'Fredoka', monospace"
+          fontFamily="'Chakra Petch', monospace"
         >
           {String(speedKmh).padStart(3, '0')}
         </text>

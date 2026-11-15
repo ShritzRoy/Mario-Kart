@@ -13,8 +13,6 @@ export interface TrackSample {
   point: THREE.Vector3;
   tangent: THREE.Vector3;
   right: THREE.Vector3;
-  up: THREE.Vector3;
-  isInLoop: boolean;
 }
 
 export interface TrackProjection {
@@ -23,8 +21,6 @@ export interface TrackProjection {
   point: THREE.Vector3;
   tangent: THREE.Vector3;
   right: THREE.Vector3;
-  up: THREE.Vector3;
-  isInLoop: boolean;
   lateral: number;
   distance: number;
   surface: 'asphalt' | 'kerb' | 'offroad';
@@ -242,16 +238,15 @@ export class StadiumTrack {
   }
 
   private sampleCurve(): void {
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    const smoothstep = (edge0: number, edge1: number, x: number) => {
-      const k = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
-      return k * k * (3 - 2 * k);
-    };
-
-    const rawPoints: THREE.Vector3[] = [];
+    const up = new THREE.Vector3(0, 1, 0);
+    let sx = 0;
+    let sz = 0;
     for (let i = 0; i < SAMPLE_COUNT; i++) {
       const t = i / SAMPLE_COUNT;
       const point = this.curve.getPointAt(t);
+      const tangent = this.curve.getTangentAt(t).normalize();
+      const right = new THREE.Vector3().crossVectors(tangent, up).normalize();
+
       for (const rc of this.rampTCenters) {
         const dt = Math.abs(t - rc);
         if (dt < 0.024) {
@@ -259,91 +254,16 @@ export class StadiumTrack {
           point.y += factor * 2.6;
         }
       }
-      rawPoints.push(point);
-    }
 
-    const loop = this.mapDef.loopSegment;
-    const isInLoopArr = new Array<boolean>(SAMPLE_COUNT).fill(false);
-    let flatFwd = new THREE.Vector3(0, 0, 1);
-    let flatRight = new THREE.Vector3(-1, 0, 0);
-
-    if (loop) {
-      const idxStart = Math.floor(loop.tStart * SAMPLE_COUNT) % SAMPLE_COUNT;
-      const idxEnd = Math.floor(loop.tEnd * SAMPLE_COUNT) % SAMPLE_COUNT;
-      const pStart = rawPoints[idxStart].clone();
-      const pEnd = rawPoints[idxEnd].clone();
-
-      flatFwd = new THREE.Vector3(pEnd.x - pStart.x, 0, pEnd.z - pStart.z);
-      const chordLen = Math.max(40, flatFwd.length());
-      flatFwd.normalize();
-      flatRight = new THREE.Vector3().crossVectors(flatFwd, worldUp).normalize();
-
-      const leadWin = 0.055;
-      const halfL = loop.lateralShift * 0.5;
-
-      for (let i = 0; i < SAMPLE_COUNT; i++) {
-        const t = i / SAMPLE_COUNT;
-        if (t >= loop.tStart - leadWin && t < loop.tStart) {
-          const k = smoothstep(loop.tStart - leadWin, loop.tStart, t);
-          rawPoints[i].addScaledVector(flatRight, -halfL * k);
-        } else if (t >= loop.tStart && t <= loop.tEnd) {
-          const u = (t - loop.tStart) / (loop.tEnd - loop.tStart);
-          const theta = u * Math.PI * 2;
-          const along = chordLen * u + loop.radius * Math.sin(theta);
-          const heightLift = loop.radius * (1 - Math.cos(theta));
-          const latShift = THREE.MathUtils.lerp(-halfL, halfL, smoothstep(0.12, 0.88, u));
-          const baseY = THREE.MathUtils.lerp(pStart.y, pEnd.y, u);
-
-          rawPoints[i]
-            .copy(pStart)
-            .addScaledVector(flatFwd, along)
-            .addScaledVector(flatRight, latShift);
-          rawPoints[i].y = baseY + heightLift;
-          isInLoopArr[i] = true;
-        } else if (t > loop.tEnd && t <= loop.tEnd + leadWin) {
-          const k = 1 - smoothstep(loop.tEnd, loop.tEnd + leadWin, t);
-          rawPoints[i].addScaledVector(flatRight, halfL * k);
-        }
-      }
-    }
-
-    let sx = 0;
-    let sz = 0;
-    for (let i = 0; i < SAMPLE_COUNT; i++) {
-      const t = i / SAMPLE_COUNT;
-      const prev = rawPoints[(i - 1 + SAMPLE_COUNT) % SAMPLE_COUNT];
-      const curr = rawPoints[i];
-      const next = rawPoints[(i + 1) % SAMPLE_COUNT];
-
-      const tangent = new THREE.Vector3().subVectors(next, prev).normalize();
-      const right = new THREE.Vector3();
-      const up = new THREE.Vector3();
-
-      if (isInLoopArr[i]) {
-        // Stabilized orthonormal frame around full 360 vertical loop
-        right.copy(flatRight).addScaledVector(tangent, -flatRight.dot(tangent)).normalize();
-        up.crossVectors(right, tangent).normalize();
-      } else {
-        right.crossVectors(tangent, worldUp).normalize();
-        up.crossVectors(right, tangent).normalize();
-      }
-
-      sx += curr.x;
-      sz += curr.z;
-      this.samples.push({
-        t,
-        point: curr,
-        tangent,
-        right,
-        up,
-        isInLoop: isInLoopArr[i],
-      });
+      sx += point.x;
+      sz += point.z;
+      this.samples.push({ t, point, tangent, right });
     }
     this.loopCx = sx / SAMPLE_COUNT;
     this.loopCz = sz / SAMPLE_COUNT;
   }
 
-  public projectOnTrack(x: number, z: number, hintIndex?: number, y?: number): TrackProjection {
+  public projectOnTrack(x: number, z: number, hintIndex?: number): TrackProjection {
     let bestIdx = 0;
     let bestDistSq = Infinity;
 
@@ -353,20 +273,18 @@ export class StadiumTrack {
         const p = this.samples[idx].point;
         const dx = x - p.x;
         const dz = z - p.z;
-        const dy = y !== undefined ? y - p.y : 0;
-        const d2 = dx * dx + dy * dy + dz * dz;
+        const d2 = dx * dx + dz * dz;
         if (d2 < bestDistSq) {
           bestDistSq = d2;
           bestIdx = idx;
         }
       }
-      if (bestDistSq > 1150) {
+      if (bestDistSq > 950) {
         for (let i = 0; i < SAMPLE_COUNT; i++) {
           const p = this.samples[i].point;
           const dx = x - p.x;
           const dz = z - p.z;
-          const dy = y !== undefined ? y - p.y : 0;
-          const d2 = dx * dx + dy * dy + dz * dz;
+          const d2 = dx * dx + dz * dz;
           if (d2 < bestDistSq) {
             bestDistSq = d2;
             bestIdx = i;
@@ -388,9 +306,8 @@ export class StadiumTrack {
 
     const s = this.samples[bestIdx];
     const dx = x - s.point.x;
-    const dy = y !== undefined ? y - s.point.y : 0;
     const dz = z - s.point.z;
-    const lateral = dx * s.right.x + dy * s.right.y + dz * s.right.z;
+    const lateral = dx * s.right.x + dz * s.right.z;
     const absLat = Math.abs(lateral);
 
     let surface: 'asphalt' | 'kerb' | 'offroad' = 'asphalt';
@@ -424,8 +341,6 @@ export class StadiumTrack {
       point: s.point,
       tangent: s.tangent,
       right: s.right,
-      up: s.up,
-      isInLoop: s.isInLoop,
       lateral,
       distance: Math.sqrt(bestDistSq),
       surface,
@@ -591,47 +506,46 @@ export class StadiumTrack {
     const deckOuter = TRACK_HALF_WIDTH + KERB_WIDTH + 0.9;
     const deckDepth = 2.2;
 
-    const pt = new THREE.Vector3();
     for (let i = 0; i <= segs; i++) {
       const s = this.samples[i % segs];
       const v = i / segs;
 
-      const lPt = pt.copy(s.point).addScaledVector(s.right, -TRACK_HALF_WIDTH).addScaledVector(s.up, 0.06).clone();
-      const rPt = pt.copy(s.point).addScaledVector(s.right, TRACK_HALF_WIDTH).addScaledVector(s.up, 0.06).clone();
+      const lx = s.point.x - s.right.x * TRACK_HALF_WIDTH;
+      const lz = s.point.z - s.right.z * TRACK_HALF_WIDTH;
+      const rx = s.point.x + s.right.x * TRACK_HALF_WIDTH;
+      const rz = s.point.z + s.right.z * TRACK_HALF_WIDTH;
 
-      // Top Asphalt Surface (+0.06 along track s.up)
-      roadPos.push(lPt.x, lPt.y, lPt.z, rPt.x, rPt.y, rPt.z);
+      // Top Asphalt Surface (y + 0.06)
+      roadPos.push(lx, s.point.y + 0.06, lz, rx, s.point.y + 0.06, rz);
       roadUV.push(0, v, 1, v);
 
-      // Solid Concrete Road Bed Box
-      const topL = pt.copy(s.point).addScaledVector(s.right, -deckOuter).addScaledVector(s.up, 0.02).clone();
-      const topR = pt.copy(s.point).addScaledVector(s.right, deckOuter).addScaledVector(s.up, 0.02).clone();
-      const botL = pt.copy(s.point).addScaledVector(s.right, -deckOuter).addScaledVector(s.up, -deckDepth).clone();
-      const botR = pt.copy(s.point).addScaledVector(s.right, deckOuter).addScaledVector(s.up, -deckDepth).clone();
-      if (!s.isInLoop) {
-        botL.y = Math.min(-0.4, botL.y);
-        botR.y = Math.min(-0.4, botR.y);
-      }
+      // Solid Concrete Road Bed Box (Outer Left Top -> Outer Right Top -> Outer Right Bottom -> Outer Left Bottom)
+      const oxL = s.point.x - s.right.x * deckOuter;
+      const ozL = s.point.z - s.right.z * deckOuter;
+      const oxR = s.point.x + s.right.x * deckOuter;
+      const ozR = s.point.z + s.right.z * deckOuter;
+      const yTop = s.point.y + 0.02;
+      const yBot = Math.min(-0.4, s.point.y - deckDepth);
       slabPos.push(
-        topL.x, topL.y, topL.z,
-        topR.x, topR.y, topR.z,
-        botR.x, botR.y, botR.z,
-        botL.x, botL.y, botL.z
+        oxL, yTop, ozL,
+        oxR, yTop, ozR,
+        oxR, yBot, ozR,
+        oxL, yBot, ozL
       );
 
-      // Raised 3D Curb Blocks aligned to s.up
-      const klOut = pt.copy(s.point).addScaledVector(s.right, -(TRACK_HALF_WIDTH + KERB_WIDTH)).addScaledVector(s.up, 0.32).clone();
-      const klTopIn = pt.copy(s.point).addScaledVector(s.right, -TRACK_HALF_WIDTH).addScaledVector(s.up, 0.32).clone();
-      const krTopIn = pt.copy(s.point).addScaledVector(s.right, TRACK_HALF_WIDTH).addScaledVector(s.up, 0.32).clone();
-      const krOut = pt.copy(s.point).addScaledVector(s.right, TRACK_HALF_WIDTH + KERB_WIDTH).addScaledVector(s.up, 0.32).clone();
+      // Raised 3D Curb Blocks (inner lip at TRACK_HALF_WIDTH, raised top plateau to BARRIER_HALF_WIDTH)
+      const klOutX = s.point.x - s.right.x * (TRACK_HALF_WIDTH + KERB_WIDTH);
+      const klOutZ = s.point.z - s.right.z * (TRACK_HALF_WIDTH + KERB_WIDTH);
+      const krOutX = s.point.x + s.right.x * (TRACK_HALF_WIDTH + KERB_WIDTH);
+      const krOutZ = s.point.z + s.right.z * (TRACK_HALF_WIDTH + KERB_WIDTH);
 
       kerbPos.push(
-        klOut.x, klOut.y, klOut.z,
-        klTopIn.x, klTopIn.y, klTopIn.z,
-        lPt.x, lPt.y - 0.01, lPt.z,
-        rPt.x, rPt.y - 0.01, rPt.z,
-        krTopIn.x, krTopIn.y, krTopIn.z,
-        krOut.x, krOut.y, krOut.z
+        klOutX, s.point.y + 0.32, klOutZ,
+        lx, s.point.y + 0.32, lz,
+        lx, s.point.y + 0.05, lz,
+        rx, s.point.y + 0.05, rz,
+        rx, s.point.y + 0.32, rz,
+        krOutX, s.point.y + 0.32, krOutZ
       );
       kerbUV.push(0, v, 0.7, v, 1, v, 1, v, 0.7, v, 0, v);
 
@@ -738,28 +652,25 @@ export class StadiumTrack {
         const outer = BARRIER_HALF_WIDTH + 1.05;
 
         const pIn = s.point.clone().addScaledVector(s.right, sideSign * inner);
-        const pMidTop = s.point.clone().addScaledVector(s.right, sideSign * mid).addScaledVector(s.up, 1.45);
-        const pOutTop = s.point.clone().addScaledVector(s.right, sideSign * outer).addScaledVector(s.up, 1.45);
-        const pOutBot = s.point.clone().addScaledVector(s.right, sideSign * outer);
+        const pMid = s.point.clone().addScaledVector(s.right, sideSign * mid);
+        const pOut = s.point.clone().addScaledVector(s.right, sideSign * outer);
 
         divPos.push(
-          pIn.x, pIn.y, pIn.z,
-          pMidTop.x, pMidTop.y, pMidTop.z,
-          pOutTop.x, pOutTop.y, pOutTop.z,
-          pOutBot.x, pOutBot.y, pOutBot.z
+          pIn.x, s.point.y, pIn.z,
+          pMid.x, s.point.y + 1.45, pMid.z,
+          pOut.x, s.point.y + 1.45, pOut.z,
+          pOut.x, s.point.y, pOut.z
         );
         divUV.push(0, v, 0.5, v, 0.8, v, 1, v);
 
-        // Elevated metallic top guardrail tube/beam aligned to s.up
-        const rInTop = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.25)).addScaledVector(s.up, 1.98);
-        const rOutTop = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.72)).addScaledVector(s.up, 1.98);
-        const rOutBot = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.72)).addScaledVector(s.up, 1.72);
-        const rInBot = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.25)).addScaledVector(s.up, 1.72);
+        // Elevated metallic top guardrail tube/beam above barrier
+        const rIn = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.25));
+        const rOut = s.point.clone().addScaledVector(s.right, sideSign * (BARRIER_HALF_WIDTH + 0.72));
         railPos.push(
-          rInTop.x, rInTop.y, rInTop.z,
-          rOutTop.x, rOutTop.y, rOutTop.z,
-          rOutBot.x, rOutBot.y, rOutBot.z,
-          rInBot.x, rInBot.y, rInBot.z
+          rIn.x, s.point.y + 1.98, rIn.z,
+          rOut.x, s.point.y + 1.98, rOut.z,
+          rOut.x, s.point.y + 1.72, rOut.z,
+          rIn.x, s.point.y + 1.72, rIn.z
         );
 
         if (i < segs) {
@@ -836,25 +747,20 @@ export class StadiumTrack {
     const lampInst = new THREE.InstancedMesh(lampGeo, lampMat, postCount);
 
     let idxCursor = 0;
-    const basisMat = new THREE.Matrix4();
     for (let i = 0; i < segs; i += stepStride) {
       const s = this.samples[i];
-      basisMat.makeBasis(s.right, s.up, s.tangent);
-      this._tmpQuat.setFromRotationMatrix(basisMat);
       for (const side of [-1, 1]) {
         if (idxCursor >= postCount) break;
-        this._tmpPos
-          .copy(s.point)
-          .addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 0.5))
-          .addScaledVector(s.up, 1.8);
+        const px = s.point.x + s.right.x * side * (BARRIER_HALF_WIDTH + 0.5);
+        const pz = s.point.z + s.right.z * side * (BARRIER_HALF_WIDTH + 0.5);
+
+        this._tmpPos.set(px, s.point.y + 1.8, pz);
+        this._tmpQuat.identity();
         this._tmpScale.set(1, 1, 1);
         this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
         postInst.setMatrixAt(idxCursor, this._tmpMat);
 
-        this._tmpPos
-          .copy(s.point)
-          .addScaledVector(s.right, side * (BARRIER_HALF_WIDTH + 0.5))
-          .addScaledVector(s.up, 2.52);
+        this._tmpPos.set(px, s.point.y + 2.52, pz);
         this._tmpMat.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
         lampInst.setMatrixAt(idxCursor, this._tmpMat);
         idxCursor++;
@@ -1499,7 +1405,7 @@ export class StadiumTrack {
     const pillarGeo = new THREE.BoxGeometry(3.2, 1, 3.2);
     for (let i = 0; i < SAMPLE_COUNT; i += 14) {
       const s = this.samples[i];
-      if (!s.isInLoop && s.point.y > 1.8) {
+      if (s.point.y > 1.8) {
         [-10.5, 10.5].forEach((lat) => {
           const px = s.point.x + s.right.x * lat;
           const pz = s.point.z + s.right.z * lat;
@@ -1512,28 +1418,6 @@ export class StadiumTrack {
           this.group.add(p);
         });
       }
-    }
-
-    // Glowing Anti-Gravity 360 Loop Support Portal Rings (if track features a vertical 360 loop)
-    if (this.mapDef.loopSegment) {
-      const lArchGeo = new THREE.TorusGeometry(BARRIER_HALF_WIDTH + 2.6, 0.85, 8, 28, Math.PI);
-      const lNeonGeo = new THREE.TorusGeometry(BARRIER_HALF_WIDTH + 1.75, 0.24, 6, 28, Math.PI);
-      const lSteelMat = new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.8, roughness: 0.25 });
-      const lNeonMat = new THREE.MeshBasicMaterial({ color: '#38bdf8' });
-      const basis = new THREE.Matrix4();
-      const loopSeg = this.mapDef.loopSegment;
-      [0.08, 0.26, 0.5, 0.74, 0.92].forEach((u) => {
-        const tVal = THREE.MathUtils.lerp(loopSeg.tStart, loopSeg.tEnd, u);
-        const idx = Math.floor(tVal * SAMPLE_COUNT) % SAMPLE_COUNT;
-        const s = this.samples[idx];
-        basis.makeBasis(s.right, s.up, s.tangent);
-        const portal = new THREE.Group();
-        portal.position.copy(s.point);
-        portal.setRotationFromMatrix(basis);
-        portal.add(new THREE.Mesh(lArchGeo, lSteelMat), new THREE.Mesh(lNeonGeo, lNeonMat));
-        this.group.add(portal);
-      });
-      this.disposables.push(lArchGeo, lNeonGeo, lSteelMat, lNeonMat);
     }
 
     // Bright Orange/Gold Suspension Ramp Markers on Jump Crests (pylons placed outside barriers!)
@@ -1678,18 +1562,14 @@ export class StadiumTrack {
     padGeo.rotateX(-Math.PI / 2);
     this.disposables.push(padGeo);
 
-    const basis = new THREE.Matrix4();
     this.mapDef.boostPads.forEach((cfg) => {
       this.boostPads.push(cfg);
       const idx = Math.floor(cfg.tCenter * SAMPLE_COUNT) % SAMPLE_COUNT;
       const s = this.samples[idx];
       const mesh = new THREE.Mesh(padGeo, this.boostPadMat);
-      mesh.position
-        .copy(s.point)
-        .addScaledVector(s.right, cfg.lateralOffset)
-        .addScaledVector(s.up, 0.11);
-      basis.makeBasis(s.right, s.up, s.tangent);
-      mesh.setRotationFromMatrix(basis);
+      mesh.position.copy(s.point).addScaledVector(s.right, cfg.lateralOffset);
+      mesh.position.y += 0.1;
+      mesh.rotation.y = Math.atan2(s.tangent.x, s.tangent.z);
       this.group.add(mesh);
     });
   }
@@ -1701,7 +1581,8 @@ export class StadiumTrack {
       const s = this.samples[idx];
       [-6.5, -2.2, 2.2, 6.5].forEach((lat) => {
         const mesh = buildItemBoxMesh(this.textures);
-        const pos = s.point.clone().addScaledVector(s.right, lat).addScaledVector(s.up, 1.5);
+        const pos = s.point.clone().addScaledVector(s.right, lat);
+        pos.y += 1.5;
         mesh.position.copy(pos);
         this.group.add(mesh);
         this.itemBoxes.push({
@@ -1715,60 +1596,17 @@ export class StadiumTrack {
   }
 
   private buildEnvironmentalHazards(): void {
-    // Organic Multi-Lobed 3D Oil Puddle Shape + Iridescent Sheen + Tipped Hazard Drum
-    const oilShape = new THREE.Shape();
-    const lobes = 28;
-    for (let i = 0; i <= lobes; i++) {
-      const a = (i / lobes) * Math.PI * 2;
-      const r =
-        2.35 +
-        Math.sin(a * 3 + 0.5) * 0.55 +
-        Math.cos(a * 5 - 0.3) * 0.32 +
-        Math.sin(a * 2) * 0.4;
-      const ox = Math.cos(a) * r;
-      const oy = Math.sin(a) * r * 0.86;
-      if (i === 0) oilShape.moveTo(ox, oy);
-      else oilShape.lineTo(ox, oy);
-    }
-    oilShape.closePath();
-
-    const oilGeo = new THREE.ShapeGeometry(oilShape);
+    const oilGeo = new THREE.CircleGeometry(2.6, 20);
     oilGeo.rotateX(-Math.PI / 2);
-    // Normalize UVs into [0,1] for iridescent oilSlickMap
-    const uvAttr = oilGeo.getAttribute('uv') as THREE.BufferAttribute;
-    const posAttr = oilGeo.getAttribute('position') as THREE.BufferAttribute;
-    for (let i = 0; i < posAttr.count; i++) {
-      uvAttr.setXY(i, posAttr.getX(i) / 7.2 + 0.5, posAttr.getZ(i) / 7.2 + 0.5);
-    }
-    uvAttr.needsUpdate = true;
-
-    const oilMat = new THREE.MeshPhysicalMaterial({
-      map: this.textures.oilSlickMap,
-      color: '#111827',
-      roughness: 0.05,
-      metalness: 0.78,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.04,
+    const oilMat = new THREE.MeshStandardMaterial({
+      color: '#090d16',
+      roughness: 0.08,
+      metalness: 0.85,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const oilRimGeo = new THREE.ExtrudeGeometry(oilShape, {
-      depth: 0.045,
-      bevelEnabled: true,
-      bevelThickness: 0.025,
-      bevelSize: 0.04,
-      bevelSegments: 2,
-    });
-    oilRimGeo.rotateX(-Math.PI / 2);
-
-    const drumGeo = new THREE.CylinderGeometry(0.55, 0.55, 1.35, 14);
-    const drumMat = new THREE.MeshStandardMaterial({ color: '#f59e0b', roughness: 0.35, metalness: 0.4 });
-    const drumBandGeo = new THREE.TorusGeometry(0.56, 0.055, 6, 16);
-    drumBandGeo.rotateX(Math.PI / 2);
-    const drumBandMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.45 });
-
-    this.disposables.push(oilGeo, oilMat, oilRimGeo, drumGeo, drumMat, drumBandGeo, drumBandMat);
+    this.disposables.push(oilGeo, oilMat);
 
     for (const hz of this.mapDef.hazards) {
       const idx = Math.floor(hz.t * SAMPLE_COUNT) % SAMPLE_COUNT;
@@ -1789,33 +1627,11 @@ export class StadiumTrack {
           mesh,
         });
       } else {
-        const puddleGroup = new THREE.Group();
+        const mesh = new THREE.Mesh(oilGeo, oilMat);
         const pos = s.point.clone().addScaledVector(s.right, hz.lateralAmp);
-        puddleGroup.position.copy(pos).addScaledVector(s.up, 0.07);
-        puddleGroup.rotation.y = Math.atan2(s.tangent.x, s.tangent.z);
-
-        const slab = new THREE.Mesh(oilRimGeo, oilMat);
-        puddleGroup.add(slab);
-        const topSheen = new THREE.Mesh(oilGeo, oilMat);
-        topSheen.position.y = 0.06;
-        puddleGroup.add(topSheen);
-
-        // Tipped yellow/black oil drum beside spill outer lip
-        const drum = new THREE.Group();
-        drum.position.set(hz.lateralAmp >= 0 ? 2.5 : -2.5, 0.56, -0.4);
-        drum.rotation.z = hz.lateralAmp >= 0 ? 1.38 : -1.38;
-        drum.rotation.y = 0.35;
-        const dBody = new THREE.Mesh(drumGeo, drumMat);
-        dBody.castShadow = true;
-        drum.add(dBody);
-        [-0.38, 0.38].forEach((by) => {
-          const band = new THREE.Mesh(drumBandGeo, drumBandMat);
-          band.position.y = by;
-          drum.add(band);
-        });
-        puddleGroup.add(drum);
-
-        this.group.add(puddleGroup);
+        mesh.position.copy(pos);
+        mesh.position.y += 0.09;
+        this.group.add(mesh);
         this.trackHazards.push({
           kind: 'oil',
           t: hz.t,
@@ -1824,8 +1640,8 @@ export class StadiumTrack {
           x: pos.x,
           y: pos.y,
           z: pos.z,
-          radius: 2.5,
-          mesh: puddleGroup,
+          radius: 2.3,
+          mesh,
         });
       }
     }

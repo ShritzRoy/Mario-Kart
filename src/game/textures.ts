@@ -17,8 +17,6 @@ export interface ProceduralTextureSet {
   itemBoxMap: THREE.CanvasTexture;
   shritizArchSignMap: THREE.CanvasTexture;
   plazaWallMap: THREE.CanvasTexture;
-  nitroFlameMap: THREE.CanvasTexture;
-  oilSlickMap: THREE.CanvasTexture;
   dispose: () => void;
 }
 
@@ -344,71 +342,6 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   }
   const plazaWallMap = register(new THREE.CanvasTexture(pwC), true, 2, 1);
 
-  // 12. Sharp Jagged Electric-Blue Fiery Nitro Texture (Image 4 aesthetic, additive-ready)
-  const [nfC, nfCtx] = makeCanvas(512, 128);
-  nfCtx.clearRect(0, 0, 512, 128);
-  // Multi-layered jagged flame wisps along U axis
-  for (let pass = 0; pass < 3; pass++) {
-    const grad = nfCtx.createLinearGradient(0, 0, 0, 128);
-    if (pass === 0) {
-      grad.addColorStop(0.0, 'rgba(37, 99, 235, 0)');
-      grad.addColorStop(0.24, 'rgba(29, 78, 216, 0.55)');
-      grad.addColorStop(0.5, 'rgba(56, 189, 248, 0.85)');
-      grad.addColorStop(0.76, 'rgba(29, 78, 216, 0.55)');
-      grad.addColorStop(1.0, 'rgba(37, 99, 235, 0)');
-    } else if (pass === 1) {
-      grad.addColorStop(0.0, 'rgba(56, 189, 248, 0)');
-      grad.addColorStop(0.32, 'rgba(14, 165, 233, 0.85)');
-      grad.addColorStop(0.5, 'rgba(186, 230, 253, 0.98)');
-      grad.addColorStop(0.68, 'rgba(14, 165, 233, 0.85)');
-      grad.addColorStop(1.0, 'rgba(56, 189, 248, 0)');
-    } else {
-      grad.addColorStop(0.0, 'rgba(224, 242, 254, 0)');
-      grad.addColorStop(0.43, 'rgba(125, 211, 252, 0.92)');
-      grad.addColorStop(0.5, 'rgba(255, 255, 255, 1)');
-      grad.addColorStop(0.57, 'rgba(125, 211, 252, 0.92)');
-      grad.addColorStop(1.0, 'rgba(224, 242, 254, 0)');
-    }
-    nfCtx.fillStyle = grad;
-    const count = pass === 0 ? 44 : pass === 1 ? 68 : 80;
-    for (let i = 0; i < count; i++) {
-      const x = (i / count) * 512;
-      const w = 16 + Math.random() * 28;
-      const amp = pass === 0 ? 52 : pass === 1 ? 36 : 18;
-      const jitter = (Math.random() - 0.5) * 14;
-      nfCtx.beginPath();
-      nfCtx.moveTo(x - w * 0.4, 64 + jitter);
-      nfCtx.lineTo(x + w * 0.25, 64 - amp * (0.5 + Math.random() * 0.5));
-      nfCtx.lineTo(x + w * 0.85, 64 + jitter * 0.4);
-      nfCtx.lineTo(x + w * 0.25, 64 + amp * (0.5 + Math.random() * 0.5));
-      nfCtx.closePath();
-      nfCtx.fill();
-    }
-  }
-  const nitroFlameMap = register(new THREE.CanvasTexture(nfC), true, 2, 1);
-
-  // 13. Iridescent Dark Oil Slick Surface Swirl
-  const [oilC, oilCtx] = makeCanvas(256, 256);
-  oilCtx.fillStyle = '#090b10';
-  oilCtx.fillRect(0, 0, 256, 256);
-  const iridColors = [
-    'rgba(168, 85, 247, 0.26)',
-    'rgba(56, 189, 248, 0.24)',
-    'rgba(34, 197, 94, 0.2)',
-    'rgba(244, 63, 94, 0.22)',
-  ];
-  for (let i = 0; i < 6; i++) {
-    const cx = 64 + Math.random() * 128;
-    const cy = 64 + Math.random() * 128;
-    const g = oilCtx.createRadialGradient(cx, cy, 4, cx, cy, 78);
-    g.addColorStop(0, iridColors[i % iridColors.length]);
-    g.addColorStop(0.55, iridColors[(i + 1) % iridColors.length]);
-    g.addColorStop(1, 'rgba(9, 11, 16, 0)');
-    oilCtx.fillStyle = g;
-    oilCtx.fillRect(0, 0, 256, 256);
-  }
-  const oilSlickMap = register(new THREE.CanvasTexture(oilC), true, 1, 1);
-
   return {
     asphaltMap,
     plazaAsphaltMap,
@@ -426,8 +359,6 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     itemBoxMap,
     shritizArchSignMap,
     plazaWallMap,
-    nitroFlameMap,
-    oilSlickMap,
     dispose: () => {
       created.forEach((t) => t.dispose());
     },

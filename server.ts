@@ -23,6 +23,8 @@ interface RoomInternal {
   phase: 'lobby' | 'countdown' | 'racing' | 'finished';
   countdownValue: number;
   raceStartTimeMs: number;
+  mapId: string;
+  weatherChoice: string;
   players: Map<string, NetPlayerInfo>;
   karts: Map<string, NetKartState>;
   hazards: Map<string, NetHazard>;
@@ -51,6 +53,8 @@ function getOrCreateRoom(roomCode: string): RoomInternal {
       phase: 'lobby',
       countdownValue: 3,
       raceStartTimeMs: 0,
+      mapId: 'plaza',
+      weatherChoice: 'sunny',
       players: new Map(),
       karts: new Map(),
       hazards: new Map(),
@@ -71,6 +75,8 @@ function serializeRoom(room: RoomInternal): NetRoomSnapshot {
     phase: room.phase,
     countdownValue: room.countdownValue,
     raceStartTimeMs: room.raceStartTimeMs,
+    mapId: room.mapId,
+    weatherChoice: room.weatherChoice,
     players: Array.from(room.players.values()).sort((a, b) => a.slotIndex - b.slotIndex),
     karts: kartsObj,
     hazards: Array.from(room.hazards.values()),
@@ -191,6 +197,7 @@ async function bootstrap() {
           id: playerId,
           name: (msg.playerName || 'Driver').slice(0, 16),
           characterId: msg.characterId || 'mario',
+          variantId: msg.variantId || 'default',
           vehicleId: msg.vehicleId || 'standard_kart',
           ready: false,
           isHost: room.players.size === 0,
@@ -218,10 +225,17 @@ async function bootstrap() {
 
       if (msg.type === 'room:selectCharacter') {
         player.characterId = msg.characterId;
+        if (msg.variantId !== undefined) player.variantId = msg.variantId;
         broadcastRoom(room);
       } else if (msg.type === 'room:selectVehicle') {
         player.vehicleId = msg.vehicleId;
         broadcastRoom(room);
+      } else if (msg.type === 'room:setCourse') {
+        if (player.isHost) {
+          room.mapId = msg.mapId || room.mapId;
+          room.weatherChoice = msg.weatherChoice || room.weatherChoice;
+          broadcastRoom(room);
+        }
       } else if (msg.type === 'room:setReady') {
         player.ready = msg.ready;
         broadcastRoom(room);
@@ -269,10 +283,15 @@ async function bootstrap() {
     const dt = 0.05;
     for (const room of rooms.values()) {
       if (room.phase === 'racing') {
-        // Tick server-side hazards
         for (const [id, hz] of room.hazards.entries()) {
           hz.ttl -= dt;
-          if (hz.kind === 'shell') {
+          if (
+            hz.kind === 'shell' ||
+            hz.kind === 'golden_fireball' ||
+            hz.kind === 'blue_shell' ||
+            hz.kind === 'purple_shell' ||
+            hz.kind === 'cannonball'
+          ) {
             hz.x += hz.vx * dt;
             hz.z += hz.vz * dt;
           }

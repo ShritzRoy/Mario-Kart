@@ -1,9 +1,38 @@
-export type ItemKind = 'none' | 'mushroom' | 'shell' | 'banana' | 'star';
+export type ItemKind =
+  | 'none'
+  | 'mushroom'
+  | 'shell'
+  | 'banana'
+  | 'star'
+  | 'golden_flower'
+  | 'super_bell'
+  | 'p_balloon'
+  | 'mini_mushroom'
+  | 'double_cherry'
+  | 'bee_mushroom'
+  | 'blue_shell'
+  | 'elephant_fruit'
+  | 'drill_mushroom'
+  | 'purple_shell'
+  | 'cannon_box'
+  | 'cloud_flower';
+
+export type HazardKind =
+  | 'shell'
+  | 'banana'
+  | 'golden_fireball'
+  | 'blue_shell'
+  | 'purple_shell'
+  | 'cannonball'
+  | 'honey_puddle';
+
+export type HitNoticeKind = HazardKind | 'star' | 'bumper' | 'oil' | 'elephant_wave';
 
 export interface NetPlayerInfo {
   id: string;
   name: string;
   characterId: string;
+  variantId?: string;
   vehicleId: string;
   ready: boolean;
   isHost: boolean;
@@ -13,6 +42,7 @@ export interface NetPlayerInfo {
 export interface NetKartState {
   id: string;
   characterId: string;
+  variantId?: string;
   vehicleId: string;
   x: number;
   y: number;
@@ -26,6 +56,11 @@ export interface NetKartState {
   starTimer: number;
   spinTimer: number;
   hopY: number;
+  scaleFactor?: number;
+  shieldCount?: number;
+  bellTimer?: number;
+  drillTimer?: number;
+  cloneActive?: boolean;
   lap: number;
   progress: number;
   rank: number;
@@ -35,12 +70,13 @@ export interface NetKartState {
 
 export interface NetHazard {
   id: string;
-  kind: 'shell' | 'banana';
+  kind: HazardKind;
   ownerId: string;
   x: number;
   y: number;
   z: number;
   vx: number;
+  vy?: number;
   vz: number;
   bouncesLeft: number;
   ttl: number;
@@ -51,6 +87,8 @@ export interface NetRoomSnapshot {
   phase: 'lobby' | 'countdown' | 'racing' | 'finished';
   countdownValue: number;
   raceStartTimeMs: number;
+  mapId: string;
+  weatherChoice: string;
   players: NetPlayerInfo[];
   karts: Record<string, NetKartState>;
   hazards: NetHazard[];
@@ -62,15 +100,22 @@ export type ClientToServerMessage =
       roomCode: string;
       playerName: string;
       characterId: string;
+      variantId?: string;
       vehicleId?: string;
     }
   | {
       type: 'room:selectCharacter';
       characterId: string;
+      variantId?: string;
     }
   | {
       type: 'room:selectVehicle';
       vehicleId: string;
+    }
+  | {
+      type: 'room:setCourse';
+      mapId: string;
+      weatherChoice: string;
     }
   | {
       type: 'room:setReady';
@@ -98,7 +143,7 @@ export type ClientToServerMessage =
       type: 'item:hitPlayer';
       targetId: string;
       attackerId: string;
-      kind: 'shell' | 'banana' | 'star';
+      kind: HitNoticeKind;
     };
 
 export type ServerToClientMessage =
@@ -115,7 +160,7 @@ export type ServerToClientMessage =
       type: 'item:hitNotice';
       targetId: string;
       attackerId: string;
-      kind: 'shell' | 'banana' | 'star';
+      kind: HitNoticeKind;
     }
   | {
       type: 'room:error';

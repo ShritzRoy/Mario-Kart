@@ -23,6 +23,13 @@ export interface HazardZoneSpec {
   kind: 'bumper' | 'oil';
 }
 
+export interface LoopSegmentSpec {
+  tStart: number;
+  tEnd: number;
+  radius: number;
+  lateralShift: number;
+}
+
 export interface MapDefinition {
   id: MapId;
   name: string;
@@ -40,6 +47,7 @@ export interface MapDefinition {
   timeTrialLimitSec: number;
   controlPoints: THREE.Vector3[];
   rampTCenters: number[];
+  loopSegment?: LoopSegmentSpec;
   boostPads: { tCenter: number; lateralOffset: number; width: number; tHalfSpan: number }[];
   itemRowTs: number[];
   hazards: HazardZoneSpec[];
@@ -137,7 +145,7 @@ export const MAPS: MapDefinition[] = [
   {
     id: 'stadium',
     name: 'Coliseum Grand Prix',
-    subtitle: 'Floodlit Bowl · Banked Arcs · Jumbotrons',
+    subtitle: 'Floodlit Bowl · 360° Anti-Gravity Loop · Jumbotrons',
     theme: 'stadium',
     skyTop: '#0b1026',
     skyMid: '#1e295e',
@@ -155,32 +163,38 @@ export const MAPS: MapDefinition[] = [
       new THREE.Vector3(54, 3.0, 166),
       new THREE.Vector3(148, 5.4, 168),
       new THREE.Vector3(204, 4.4, 88),
-      new THREE.Vector3(176, 5.8, -14),
-      new THREE.Vector3(192, 2.8, -118),
+      new THREE.Vector3(196, 4.4, -18),
+      new THREE.Vector3(188, 2.8, -118),
       new THREE.Vector3(122, 1.4, -192),
       new THREE.Vector3(22, 1.0, -196),
       new THREE.Vector3(-42, 1.2, -148),
       new THREE.Vector3(-22, 0.6, -88),
     ],
-    rampTCenters: [0.36, 0.74],
+    rampTCenters: [0.34, 0.74],
+    loopSegment: {
+      tStart: 0.44,
+      tEnd: 0.52,
+      radius: 21,
+      lateralShift: 44,
+    },
     boostPads: [
       { tCenter: 0.13, lateralOffset: -3.5, width: 4.8, tHalfSpan: 0.013 },
-      { tCenter: 0.35, lateralOffset: 0, width: 5.5, tHalfSpan: 0.014 },
-      { tCenter: 0.56, lateralOffset: 4.0, width: 4.8, tHalfSpan: 0.013 },
+      { tCenter: 0.33, lateralOffset: 0, width: 5.5, tHalfSpan: 0.014 },
+      { tCenter: 0.425, lateralOffset: 0, width: 6.2, tHalfSpan: 0.014 },
       { tCenter: 0.73, lateralOffset: 0, width: 5.5, tHalfSpan: 0.014 },
       { tCenter: 0.91, lateralOffset: -2.8, width: 4.8, tHalfSpan: 0.013 },
     ],
-    itemRowTs: [0.09, 0.29, 0.5, 0.68, 0.86],
+    itemRowTs: [0.09, 0.29, 0.59, 0.85],
     hazards: [
       { t: 0.22, lateralAmp: 7.2, speed: 1.9, kind: 'bumper' },
-      { t: 0.64, lateralAmp: 7.5, speed: 2.2, kind: 'bumper' },
-      { t: 0.44, lateralAmp: -3.5, speed: 0, kind: 'oil' },
+      { t: 0.66, lateralAmp: 7.5, speed: 2.2, kind: 'bumper' },
+      { t: 0.81, lateralAmp: -3.0, speed: 0, kind: 'oil' },
     ],
   },
   {
     id: 'skyline',
     name: 'Skyline Overpass',
-    subtitle: 'Elevated Viaducts · Air Jumps · Sweeping Loops',
+    subtitle: 'Elevated Viaducts · 360° Sky Loop · Air Jumps',
     theme: 'skyline',
     skyTop: '#0369a1',
     skyMid: '#0ea5e9',
@@ -197,26 +211,32 @@ export const MAPS: MapDefinition[] = [
       new THREE.Vector3(0, 6.0, 92),
       new THREE.Vector3(64, 10.6, 174),
       new THREE.Vector3(166, 13.4, 148),
-      new THREE.Vector3(218, 8.0, 44),
-      new THREE.Vector3(176, 3.0, -48),
-      new THREE.Vector3(196, 4.2, -148),
+      new THREE.Vector3(212, 9.5, 44),
+      new THREE.Vector3(198, 5.2, -52),
+      new THREE.Vector3(194, 4.2, -148),
       new THREE.Vector3(114, 7.6, -212),
       new THREE.Vector3(6, 11.2, -196),
       new THREE.Vector3(-48, 8.4, -144),
       new THREE.Vector3(-24, 6.2, -88),
     ],
-    rampTCenters: [0.18, 0.52, 0.81],
+    rampTCenters: [0.18, 0.56, 0.81],
+    loopSegment: {
+      tStart: 0.35,
+      tEnd: 0.43,
+      radius: 21,
+      lateralShift: 44,
+    },
     boostPads: [
       { tCenter: 0.16, lateralOffset: 0, width: 5.5, tHalfSpan: 0.015 },
-      { tCenter: 0.36, lateralOffset: -3.5, width: 4.8, tHalfSpan: 0.013 },
-      { tCenter: 0.51, lateralOffset: 0, width: 5.5, tHalfSpan: 0.015 },
+      { tCenter: 0.335, lateralOffset: 0, width: 6.2, tHalfSpan: 0.014 },
+      { tCenter: 0.55, lateralOffset: 0, width: 5.5, tHalfSpan: 0.015 },
       { tCenter: 0.79, lateralOffset: 0, width: 5.5, tHalfSpan: 0.015 },
       { tCenter: 0.93, lateralOffset: 3.0, width: 4.8, tHalfSpan: 0.013 },
     ],
-    itemRowTs: [0.08, 0.29, 0.47, 0.69, 0.88],
+    itemRowTs: [0.08, 0.27, 0.51, 0.71, 0.88],
     hazards: [
-      { t: 0.27, lateralAmp: 7.5, speed: 2.1, kind: 'bumper' },
-      { t: 0.61, lateralAmp: 6.8, speed: 2.0, kind: 'bumper' },
+      { t: 0.23, lateralAmp: 7.5, speed: 2.1, kind: 'bumper' },
+      { t: 0.63, lateralAmp: 6.8, speed: 2.0, kind: 'bumper' },
       { t: 0.74, lateralAmp: 3.0, speed: 0, kind: 'oil' },
     ],
   },

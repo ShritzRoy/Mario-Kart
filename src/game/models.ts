@@ -15,6 +15,14 @@ export interface KartVisualRig {
   exhaustTips: THREE.Vector3[];
   exhaustFlames: THREE.Mesh[];
   hoverRotors: THREE.Object3D[];
+  starHologramGroup: THREE.Group;
+  pBalloonGroup: THREE.Group;
+  balloonMeshes: THREE.Mesh[];
+  bellClawsGroup: THREE.Group;
+  drillNoseMesh: THREE.Group;
+  cannonBoxMesh: THREE.Group;
+  cloudHalo: THREE.Group;
+  cloneGhostGroup: THREE.Group;
   heldItemMount: THREE.Group;
   heldItemMeshes: Record<Exclude<ItemKind, 'none'>, THREE.Group>;
   underglowMat: THREE.MeshBasicMaterial;
@@ -104,14 +112,14 @@ function getSharedGeos(): SharedKartGeos {
   podGeo.rotateX(Math.PI / 2);
 
   const exPts = [
-    new THREE.Vector2(0.06, 0),
-    new THREE.Vector2(0.075, 0.26),
-    new THREE.Vector2(0.12, 0.48),
-    new THREE.Vector2(0.092, 0.49),
-    new THREE.Vector2(0.05, 0.26),
+    new THREE.Vector2(0.08, 0),
+    new THREE.Vector2(0.115, 0.28),
+    new THREE.Vector2(0.185, 0.6),
+    new THREE.Vector2(0.148, 0.61),
+    new THREE.Vector2(0.072, 0.28),
   ];
-  const exGeo = new THREE.LatheGeometry(exPts, 16);
-  exGeo.rotateX(-Math.PI / 2 - 0.32);
+  const exGeo = new THREE.LatheGeometry(exPts, 18);
+  exGeo.rotateX(-Math.PI / 2 - 0.34);
 
   const colGeo = new THREE.CylinderGeometry(0.04, 0.05, 0.35, 10);
   colGeo.rotateX(Math.PI / 2);
@@ -251,6 +259,8 @@ export function buildKartAndDriver(
   root.add(shadowPlane);
 
   const kartBodyGroup = new THREE.Group();
+  // Larger, bolder kart silhouette matching Nintendo Mario Kart proportions
+  kartBodyGroup.scale.setScalar(isTwoWheel ? 1.1 : 1.15);
   root.add(kartBodyGroup);
 
   // Vehicle Paint Palette: blend signature character paint with iconic vehicle style
@@ -394,33 +404,89 @@ export function buildKartAndDriver(
   const hoverRotors: THREE.Object3D[] = [];
   const exhaustTips: THREE.Vector3[] = [];
   const exhaustFlames: THREE.Mesh[] = [];
-  const flameConeGeo = trackGeo(new THREE.ConeGeometry(0.14, 0.72, 12));
+  const flameConeGeo = trackGeo(new THREE.ConeGeometry(0.24, 1.35, 14, 1, true));
   flameConeGeo.rotateX(-Math.PI / 2);
-  flameConeGeo.translate(0, 0, -0.36);
+  flameConeGeo.translate(0, 0, -0.68);
 
-  const addExhaustPair = (positions: [number, number, number][], scale = 1) => {
+  const flameCoreGeo = trackGeo(new THREE.ConeGeometry(0.12, 0.85, 10));
+  flameCoreGeo.rotateX(-Math.PI / 2);
+  flameCoreGeo.translate(0, 0, -0.44);
+
+  const exhaustGunmetalMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: '#1e293b',
+      metalness: 0.82,
+      roughness: 0.24,
+      envMapIntensity: 1.35,
+    })
+  );
+  const exhaustGoldRimMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: '#fde047',
+      metalness: 0.78,
+      roughness: 0.18,
+      emissive: '#ca8a04',
+      emissiveIntensity: 0.18,
+    })
+  );
+  const exhaustRimGeo = trackGeo(new THREE.TorusGeometry(0.172, 0.036, 10, 20));
+  const kartWorldScale = isTwoWheel ? 1.1 : 1.15;
+
+  const addExhaustPair = (positions: [number, number, number][], scale = 1.65) => {
     positions.forEach(([x, y, z]) => {
-      const pipe = new THREE.Mesh(geos.exGeo, chromeMat);
-      pipe.position.set(x, y, z);
-      pipe.scale.setScalar(scale);
+      const pipeGroup = new THREE.Group();
+      pipeGroup.position.set(x, y, z);
+      pipeGroup.rotation.y = x < 0 ? 0.16 : -0.16;
+      pipeGroup.scale.setScalar(scale);
+
+      const pipe = new THREE.Mesh(geos.exGeo, exhaustGunmetalMat);
       pipe.castShadow = castShadow;
-      kartBodyGroup.add(pipe);
-      exhaustTips.push(new THREE.Vector3(x, y + 0.14 * scale, z - 0.44 * scale));
+      pipeGroup.add(pipe);
+
+      // Prominent bright yellow/gold flared collar tip matching Image 3
+      const collar = new THREE.Mesh(exhaustRimGeo, exhaustGoldRimMat);
+      collar.position.set(0, 0.19, -0.56);
+      collar.rotation.x = -0.34;
+      pipeGroup.add(collar);
+
+      kartBodyGroup.add(pipeGroup);
+      exhaustTips.push(
+        new THREE.Vector3(
+          x * kartWorldScale,
+          (y + 0.19 * scale) * kartWorldScale,
+          (z - 0.58 * scale) * kartWorldScale
+        )
+      );
 
       const fMat = trackMat(
         new THREE.MeshBasicMaterial({
-          color: '#fb923c',
+          map: textures.nitroFlameMap,
+          color: '#38bdf8',
           transparent: true,
-          opacity: 0.88,
+          opacity: 0.94,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      const flame = new THREE.Mesh(flameConeGeo, fMat);
+      flame.position.set(0, 0.19, -0.54);
+      flame.rotation.x = 0.24;
+      flame.visible = false;
+
+      const coreMat = trackMat(
+        new THREE.MeshBasicMaterial({
+          color: '#e0f2fe',
+          transparent: true,
+          opacity: 0.96,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         })
       );
-      const flame = new THREE.Mesh(flameConeGeo, fMat);
-      flame.position.set(x, y + 0.14 * scale, z - 0.4 * scale);
-      flame.rotation.x = 0.22;
-      flame.visible = false;
-      kartBodyGroup.add(flame);
+      const innerCore = new THREE.Mesh(flameCoreGeo, coreMat);
+      flame.add(innerCore);
+
+      pipeGroup.add(flame);
       exhaustFlames.push(flame);
     });
   };
@@ -608,16 +674,47 @@ export function buildKartAndDriver(
     glowMesh.position.set(0, 0.23 + liftY * 0.5, 0);
     kartBodyGroup.add(glowMesh);
 
-    // 3. Vehicle-Specific Details
-    if (isBubble) {
-      // Rounded retro bubble hood & stubby nose
-      const hood = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.62, 18, 14)), paintMat);
-      hood.scale.set(1.05, 0.68, 1.25);
-      hood.position.set(0, 0.68, 0.62);
-      kartBodyGroup.add(hood);
-    }
+    // 3. Vehicle-Specific Sculptural Differentiation Across All 16 Models
+    if (vSpec.id === 'standard_kart') {
+      // Iconic Mario Kart Standard Kart (Image 3): white ribbed floorwell trim, padded red armrests, sculpted bumper apron
+      const apron = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(1.18, 0.18, 0.45)), creamMat);
+      apron.position.set(0, 0.38, 1.15);
+      kartBodyGroup.add(apron);
 
-    if (isRally) {
+      const armGeo = trackGeo(new THREE.BoxGeometry(0.24, 0.18, 0.72));
+      [-0.56, 0.56].forEach((ax) => {
+        const arm = new THREE.Mesh(armGeo, paintMat);
+        arm.position.set(ax, 0.74, -0.12);
+        arm.castShadow = castShadow;
+        kartBodyGroup.add(arm);
+      });
+    } else if (vSpec.id === 'gold_standard') {
+      // Gold Standard: jeweled royal crown fin + twin gold side louvers
+      const jewelNose = new THREE.Mesh(trackGeo(new THREE.OctahedronGeometry(0.18, 0)), secondaryPaintMat);
+      jewelNose.position.set(0, 0.64, 1.38);
+      kartBodyGroup.add(jewelNose);
+      const wingCrown = new THREE.Mesh(trackGeo(new THREE.TorusGeometry(0.26, 0.045, 8, 16, Math.PI)), chromeMat);
+      wingCrown.position.set(0, 1.24, -1.16);
+      kartBodyGroup.add(wingCrown);
+    } else if (vSpec.id === 'pipe_frame') {
+      // Exposed twin-cylinder chrome engine ribs & braided tubular rollover loop
+      const cylGeo = trackGeo(new THREE.CylinderGeometry(0.11, 0.11, 0.34, 12));
+      [-0.22, 0.22].forEach((cx) => {
+        const cyl = new THREE.Mesh(cylGeo, chromeMat);
+        cyl.position.set(cx, 0.96, -0.88);
+        cyl.rotation.z = cx > 0 ? -0.35 : 0.35;
+        kartBodyGroup.add(cyl);
+      });
+    } else if (isBubble) {
+      // Cloud Coupe: oversized bubbly rounded hood & retro spherical tail pods
+      const hood = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.68, 20, 16)), paintMat);
+      hood.scale.set(1.08, 0.74, 1.32);
+      hood.position.set(0, 0.7, 0.62);
+      kartBodyGroup.add(hood);
+      const dome = new THREE.Mesh(trackGeo(new THREE.SphereGeometry(0.62, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.45)), glassMat);
+      dome.position.set(0, 1.05, 0.1);
+      kartBodyGroup.add(dome);
+    } else if (isRally) {
       // Roof intake scoop & quad front fog lamps + tall GT rear spoiler
       const roof = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.95, 0.14, 0.72)), paintMat);
       roof.position.set(0, 1.48, -0.35);
@@ -644,6 +741,23 @@ export function buildKartAndDriver(
         const spot = new THREE.Mesh(geos.headLensGeo, headlightMat);
         spot.position.set(lx, 1.76, -0.42);
         kartBodyGroup.add(spot);
+      });
+    } else if (vSpec.id === 'arcade_racer') {
+      // Arcade GT: F1 multi-plane front aero splitter + stepped shark fin
+      const fWing = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(1.74, 0.08, 0.36)), secondaryPaintMat);
+      fWing.position.set(0, 0.3, 1.44);
+      kartBodyGroup.add(fWing);
+      const shark = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.08, 0.44, 0.72)), paintMat);
+      shark.position.set(0, 1.05, -0.82);
+      kartBodyGroup.add(shark);
+    } else if (vSpec.id === 'star_cruiser') {
+      // Star Cruiser: swept delta starfighter wings + violet plasma halo
+      [-0.92, 0.92].forEach((wx) => {
+        const w = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.75, 0.08, 1.15)), paintMat);
+        w.position.set(wx, 0.52, -0.18);
+        w.rotation.y = wx > 0 ? -0.35 : 0.35;
+        w.rotation.z = wx > 0 ? 0.16 : -0.16;
+        kartBodyGroup.add(w);
       });
     } else if (isMach) {
       // Retro Convertible Wide Fin Trim + Cream Bumper
@@ -725,7 +839,7 @@ export function buildKartAndDriver(
         kartBodyGroup.add(rotor);
         hoverRotors.push(rotor);
       });
-      addExhaustPair([[-0.44, 0.94, -1.06], [0.44, 0.94, -1.06]], 0.95);
+      addExhaustPair([[-0.44, 0.94, -1.06], [0.44, 0.94, -1.06]], 1.15);
     } else {
       const wingMesh = new THREE.Mesh(geos.wingGeo, paintMat);
       wingMesh.position.set(0, (isRally ? 1.38 : 1.2) + liftY, -1.16);
@@ -738,7 +852,7 @@ export function buildKartAndDriver(
         strut.position.set(x, (isRally ? 1.09 : 0.99) + liftY, -1.1);
         kartBodyGroup.add(strut);
       });
-      addExhaustPair([[-0.28, 0.84 + liftY, -1.08], [0.28, 0.84 + liftY, -1.08]], 1);
+      addExhaustPair([[-0.34, 0.84 + liftY, -1.06], [0.34, 0.84 + liftY, -1.06]], 1.26);
     }
 
     // Seat & Steering Wheel
@@ -788,28 +902,166 @@ export function buildKartAndDriver(
     });
   }
 
-  // ==================== TRAILING HELD ABILITY MOUNT (BETWEEN NITRO EXHAUSTS) ====================
+  // ==================== RAINBOW HOLOGRAM SPHERE + ABILITY RIGS + TRAILING ITEM MOUNT ====================
+  // 1) Superstar Rainbow Hologram Sphere around Kart + Driver
+  const starHologramGroup = new THREE.Group();
+  starHologramGroup.position.set(0, 1.08, 0);
+  starHologramGroup.visible = false;
+
+  const holoWireGeo = trackGeo(new THREE.IcosahedronGeometry(1.96, 2));
+  const holoWireMat = trackMat(
+    new THREE.MeshBasicMaterial({
+      color: '#facc15',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.72,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  const holoWire = new THREE.Mesh(holoWireGeo, holoWireMat);
+  starHologramGroup.add(holoWire);
+
+  const holoShellGeo = trackGeo(new THREE.SphereGeometry(1.88, 24, 18));
+  const holoShellMat = trackMat(
+    new THREE.MeshBasicMaterial({
+      color: '#38bdf8',
+      transparent: true,
+      opacity: 0.22,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+  );
+  const holoShell = new THREE.Mesh(holoShellGeo, holoShellMat);
+  starHologramGroup.add(holoShell);
+
+  const holoRingGeo = trackGeo(new THREE.TorusGeometry(2.08, 0.055, 8, 36));
+  const holoRingMat1 = trackMat(
+    new THREE.MeshBasicMaterial({ color: '#f472b6', transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending })
+  );
+  const holoRingMat2 = trackMat(
+    new THREE.MeshBasicMaterial({ color: '#4ade80', transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending })
+  );
+  const hRing1 = new THREE.Mesh(holoRingGeo, holoRingMat1);
+  hRing1.rotation.x = Math.PI / 3;
+  const hRing2 = new THREE.Mesh(holoRingGeo, holoRingMat2);
+  hRing2.rotation.y = Math.PI / 3;
+  starHologramGroup.add(hRing1, hRing2);
+  kartBodyGroup.add(starHologramGroup);
+
+  // 2) P-Balloon Orbiting Shields (up to 3)
+  const pBalloonGroup = new THREE.Group();
+  pBalloonGroup.position.set(0, 1.55, -0.35);
+  const balloonMeshes: THREE.Mesh[] = [];
+  const balloonColors = ['#ef4444', '#38bdf8', '#facc15'];
+  const balloonGeo = trackGeo(new THREE.SphereGeometry(0.28, 14, 12));
+  balloonColors.forEach((bCol, bi) => {
+    const bMat = trackMat(
+      new THREE.MeshPhysicalMaterial({ color: bCol, roughness: 0.14, clearcoat: 1.0, emissive: bCol, emissiveIntensity: 0.18 })
+    );
+    const bm = new THREE.Mesh(balloonGeo, bMat);
+    const ang = (bi / 3) * Math.PI * 2;
+    bm.position.set(Math.cos(ang) * 0.9, 0.45, Math.sin(ang) * 0.9);
+    bm.visible = false;
+    pBalloonGroup.add(bm);
+    balloonMeshes.push(bm);
+  });
+  kartBodyGroup.add(pBalloonGroup);
+
+  // 3) Super Bell Cat Claws aura + ears
+  const bellClawsGroup = new THREE.Group();
+  bellClawsGroup.visible = false;
+  const clawMat = trackMat(new THREE.MeshBasicMaterial({ color: '#fde047', transparent: true, opacity: 0.85 }));
+  const clawRing = new THREE.Mesh(trackGeo(new THREE.TorusGeometry(1.45, 0.05, 8, 28)), clawMat);
+  clawRing.rotation.x = Math.PI / 2;
+  clawRing.position.y = 0.52;
+  bellClawsGroup.add(clawRing);
+  kartBodyGroup.add(bellClawsGroup);
+
+  // 4) Drill Mushroom Nose Cone
+  const drillNoseMesh = new THREE.Group();
+  drillNoseMesh.position.set(0, 0.56, 1.55);
+  drillNoseMesh.visible = false;
+  const drillCone = new THREE.Mesh(
+    trackGeo(new THREE.ConeGeometry(0.32, 0.92, 12)),
+    chromeMat
+  );
+  drillCone.rotation.x = Math.PI / 2;
+  drillNoseMesh.add(drillCone);
+  kartBodyGroup.add(drillNoseMesh);
+
+  // 5) Cannon Box mounted on Hood
+  const cannonBoxMesh = new THREE.Group();
+  cannonBoxMesh.position.set(0, 1.05, 0.88);
+  cannonBoxMesh.visible = false;
+  const cBox = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.46, 0.42, 0.5)), carbonMat);
+  const cBarrel = new THREE.Mesh(trackGeo(new THREE.CylinderGeometry(0.14, 0.18, 0.52, 14)), chromeMat);
+  cBarrel.rotation.x = Math.PI / 2;
+  cBarrel.position.set(0, 0.04, 0.36);
+  cannonBoxMesh.add(cBox, cBarrel);
+  kartBodyGroup.add(cannonBoxMesh);
+
+  // 6) Cloud Flower Halo
+  const cloudHalo = new THREE.Group();
+  cloudHalo.position.set(0, 0.35, 0);
+  cloudHalo.visible = false;
+  const puffGeo = trackGeo(new THREE.SphereGeometry(0.26, 10, 8));
+  for (let cp = 0; cp < 6; cp++) {
+    const a = (cp / 6) * Math.PI * 2;
+    const puff = new THREE.Mesh(puffGeo, creamMat);
+    puff.position.set(Math.cos(a) * 1.15, 0, Math.sin(a) * 1.15);
+    cloudHalo.add(puff);
+  }
+  kartBodyGroup.add(cloudHalo);
+
+  // 7) Double Cherry Hologram Decoy Kart
+  const cloneGhostGroup = new THREE.Group();
+  cloneGhostGroup.visible = false;
+  const cloneMat = trackMat(
+    new THREE.MeshBasicMaterial({
+      color: '#f472b6',
+      transparent: true,
+      opacity: 0.62,
+      wireframe: true,
+    })
+  );
+  const cloneCore = new THREE.Mesh(trackGeo(new THREE.BoxGeometry(0.85, 0.55, 1.35)), cloneMat);
+  cloneCore.position.set(1.55, 0.55, -0.65);
+  cloneGhostGroup.add(cloneCore);
+  root.add(cloneGhostGroup);
+
+  // 8) Trailing Held Ability Mount (between twin nitro exhausts)
   const heldItemMount = new THREE.Group();
-  heldItemMount.position.set(0, isTwoWheel ? 0.76 : seatY + 0.16, -1.46);
+  heldItemMount.position.set(0, isTwoWheel ? 0.8 : seatY + 0.18, -1.62);
   kartBodyGroup.add(heldItemMount);
 
-  const heldBanana = buildBananaMesh();
-  heldBanana.scale.setScalar(0.75);
-  heldBanana.visible = false;
+  const mkHeld = (builder: () => THREE.Group, scale = 0.72): THREE.Group => {
+    const m = builder();
+    m.scale.setScalar(scale);
+    m.visible = false;
+    heldItemMount.add(m);
+    return m;
+  };
 
-  const heldShell = buildGreenShellMesh();
-  heldShell.scale.setScalar(0.62);
-  heldShell.visible = false;
-
-  const heldMushroom = buildMushroomItemMesh();
-  heldMushroom.scale.setScalar(0.74);
-  heldMushroom.visible = false;
-
-  const heldStar = buildStarItemMesh();
-  heldStar.scale.setScalar(0.74);
-  heldStar.visible = false;
-
-  heldItemMount.add(heldBanana, heldShell, heldMushroom, heldStar);
+  const heldItemMeshes: Record<Exclude<ItemKind, 'none'>, THREE.Group> = {
+    banana: mkHeld(buildBananaMesh, 0.76),
+    shell: mkHeld(buildGreenShellMesh, 0.62),
+    mushroom: mkHeld(buildMushroomItemMesh, 0.74),
+    star: mkHeld(buildStarItemMesh, 0.74),
+    golden_flower: mkHeld(buildGoldenFlowerItemMesh, 0.74),
+    super_bell: mkHeld(buildSuperBellItemMesh, 0.74),
+    p_balloon: mkHeld(buildPBalloonItemMesh, 0.74),
+    mini_mushroom: mkHeld(buildMiniMushroomItemMesh, 0.72),
+    double_cherry: mkHeld(buildDoubleCherryItemMesh, 0.74),
+    bee_mushroom: mkHeld(buildBeeMushroomItemMesh, 0.74),
+    blue_shell: mkHeld(buildBlueShellMesh, 0.64),
+    elephant_fruit: mkHeld(buildElephantFruitItemMesh, 0.74),
+    drill_mushroom: mkHeld(buildDrillMushroomItemMesh, 0.74),
+    purple_shell: mkHeld(buildPurpleShellMesh, 0.64),
+    cannon_box: mkHeld(buildCannonBoxItemMesh, 0.72),
+    cloud_flower: mkHeld(buildCloudFlowerItemMesh, 0.74),
+  };
 
   // ==================== REFINED HIGH-DETAIL COMPOSITE 3D CHARACTER MODEL (IMAGE 2 QUALITY) ====================
   const driverGroup = new THREE.Group();
@@ -857,7 +1109,7 @@ export function buildKartAndDriver(
   const eyeWhiteMat = trackMat(new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.08 }));
 
   const scaleFactor =
-    spec.weightClass === 'Heavyweight' ? 1.12 : spec.weightClass === 'Lightweight' ? 0.92 : 1.0;
+    spec.weightClass === 'Heavyweight' ? 1.48 : spec.weightClass === 'Lightweight' ? 1.22 : 1.35;
   driverGroup.scale.setScalar(scaleFactor);
 
   // Sculpted Torso + Bib/Dress + Collar
@@ -926,7 +1178,9 @@ export function buildKartAndDriver(
   const upperArmGeo = trackGeo(new THREE.CapsuleGeometry(0.075, 0.22, 6, 12));
   const forearmGeo = trackGeo(new THREE.CapsuleGeometry(0.068, 0.22, 6, 12));
   const cuffGeo = trackGeo(new THREE.CylinderGeometry(0.095, 0.08, 0.075, 14));
-  const handGeo = trackGeo(new THREE.SphereGeometry(0.105, 14, 12));
+  const palmGeo = trackGeo(new THREE.CapsuleGeometry(0.065, 0.08, 6, 8));
+  const fingerGeo = trackGeo(new THREE.CapsuleGeometry(0.028, 0.07, 4, 6));
+  const thumbGeo = trackGeo(new THREE.CapsuleGeometry(0.03, 0.06, 4, 6));
   const shoulderGeo = trackGeo(
     new THREE.SphereGeometry(spec.species === 'princess' ? 0.145 : 0.105, 14, 12)
   );
@@ -956,10 +1210,28 @@ export function buildKartAndDriver(
     cuff.rotation.y = -side * 0.25;
     driverGroup.add(cuff);
 
-    const hand = new THREE.Mesh(handGeo, gloveMat);
-    hand.position.set(side * 0.18, 0.26, 0.46);
-    hand.scale.set(0.95, 0.9, 1.1);
-    driverGroup.add(hand);
+    // Articulated Racing Hand with palm, curved grip fingers, and resting thumb
+    const handGroup = new THREE.Group();
+    handGroup.position.set(side * 0.18, 0.26, 0.46);
+    handGroup.rotation.y = -side * 0.32;
+
+    const palm = new THREE.Mesh(palmGeo, gloveMat);
+    palm.rotation.x = Math.PI / 3;
+    handGroup.add(palm);
+
+    // Gripping fingers wrapped around wheel rim
+    const fingers = new THREE.Mesh(fingerGeo, gloveMat);
+    fingers.position.set(0, -0.02, 0.05);
+    fingers.rotation.x = Math.PI / 2 + 0.3;
+    handGroup.add(fingers);
+
+    // Articulated thumb resting on top
+    const thumb = new THREE.Mesh(thumbGeo, gloveMat);
+    thumb.position.set(-side * 0.045, 0.03, 0.02);
+    thumb.rotation.z = side * 0.6;
+    handGroup.add(thumb);
+
+    driverGroup.add(handGroup);
   });
 
   // Head Group with Expressive Sclera, Vivid Iris, Specular Catchlight, Eyelid Rim & Brows
@@ -1370,13 +1642,16 @@ export function buildKartAndDriver(
     exhaustTips,
     exhaustFlames,
     hoverRotors,
+    starHologramGroup,
+    pBalloonGroup,
+    balloonMeshes,
+    bellClawsGroup,
+    drillNoseMesh,
+    cannonBoxMesh,
+    cloudHalo,
+    cloneGhostGroup,
     heldItemMount,
-    heldItemMeshes: {
-      banana: heldBanana,
-      shell: heldShell,
-      mushroom: heldMushroom,
-      star: heldStar,
-    },
+    heldItemMeshes,
     underglowMat,
     paintMat,
     isTwoWheel,
@@ -1384,6 +1659,232 @@ export function buildKartAndDriver(
       localDisposables.forEach((d) => d.dispose());
     },
   };
+}
+
+export function buildGoldenFlowerItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const petalMat = new THREE.MeshPhysicalMaterial({ color: '#fbbf24', emissive: '#f59e0b', emissiveIntensity: 0.4, clearcoat: 1 });
+  const centerMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.25 });
+  const center = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.14, 16), centerMat);
+  center.rotation.x = Math.PI / 2;
+  center.position.y = 0.48;
+  g.add(center);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.11, 10, 18), petalMat);
+  ring.position.y = 0.48;
+  g.add(ring);
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.32, 8), new THREE.MeshStandardMaterial({ color: '#22c55e' }));
+  stem.position.y = 0.18;
+  g.add(stem);
+  return g;
+}
+
+export function buildSuperBellItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshPhysicalMaterial({ color: '#facc15', metalness: 0.65, roughness: 0.18, clearcoat: 1 });
+  const dome = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.44, 0.56, 16), mat);
+  dome.position.y = 0.42;
+  g.add(dome);
+  const earGeo = new THREE.ConeGeometry(0.12, 0.22, 6);
+  [-0.16, 0.16].forEach((ex) => {
+    const ear = new THREE.Mesh(earGeo, mat);
+    ear.position.set(ex, 0.72, 0);
+    g.add(ear);
+  });
+  return g;
+}
+
+export function buildPBalloonItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshPhysicalMaterial({ color: '#38bdf8', roughness: 0.14, clearcoat: 1 });
+  const sph = new THREE.Mesh(new THREE.SphereGeometry(0.46, 16, 14), mat);
+  sph.position.y = 0.48;
+  g.add(sph);
+  return g;
+}
+
+export function buildMiniMushroomItemMesh(): THREE.Group {
+  const g = buildMushroomItemMesh();
+  const cap = g.children[0] as THREE.Mesh;
+  cap.material = new THREE.MeshPhysicalMaterial({ color: '#38bdf8', roughness: 0.2, clearcoat: 1 });
+  g.scale.setScalar(0.75);
+  return g;
+}
+
+export function buildDoubleCherryItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshPhysicalMaterial({ color: '#ec4899', roughness: 0.18, clearcoat: 1 });
+  [-0.22, 0.22].forEach((cx) => {
+    const ch = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 12), mat);
+    ch.position.set(cx, 0.28, 0);
+    g.add(ch);
+  });
+  return g;
+}
+
+export function buildBeeMushroomItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const cap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.44, 16, 14),
+    new THREE.MeshPhysicalMaterial({ color: '#facc15', roughness: 0.22, clearcoat: 1 })
+  );
+  cap.position.y = 0.36;
+  g.add(cap);
+  const stripe = new THREE.Mesh(
+    new THREE.TorusGeometry(0.41, 0.06, 8, 18),
+    new THREE.MeshStandardMaterial({ color: '#1e293b' })
+  );
+  stripe.rotation.x = Math.PI / 2;
+  stripe.position.y = 0.36;
+  g.add(stripe);
+  return g;
+}
+
+export function buildElephantFruitItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(0.42, 16, 12),
+    new THREE.MeshPhysicalMaterial({ color: '#fb7185', roughness: 0.25, clearcoat: 0.85 })
+  );
+  body.position.y = 0.42;
+  g.add(body);
+  return g;
+}
+
+export function buildDrillMushroomItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const drill = new THREE.Mesh(
+    new THREE.ConeGeometry(0.36, 0.74, 12),
+    new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.82, roughness: 0.2 })
+  );
+  drill.position.y = 0.46;
+  g.add(drill);
+  return g;
+}
+
+export function buildCannonBoxItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(0.56, 0.5, 0.56),
+    new THREE.MeshStandardMaterial({ color: '#1e293b', metalness: 0.55, roughness: 0.35 })
+  );
+  box.position.y = 0.38;
+  g.add(box);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.48, 12), new THREE.MeshStandardMaterial({ color: '#64748b' }));
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.42, 0.36);
+  g.add(barrel);
+  return g;
+}
+
+export function buildCloudFlowerItemMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshPhysicalMaterial({ color: '#f8fafc', roughness: 0.2, clearcoat: 0.9 });
+  [
+    [0, 0.48, 0],
+    [-0.25, 0.42, 0],
+    [0.25, 0.42, 0],
+  ].forEach(([x, y, z]) => {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), mat);
+    p.position.set(x, y, z);
+    g.add(p);
+  });
+  return g;
+}
+
+export function buildGoldenFireballMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const orb = new THREE.Mesh(
+    new THREE.SphereGeometry(0.52, 14, 12),
+    new THREE.MeshBasicMaterial({ color: '#fde047' })
+  );
+  orb.position.y = 0.55;
+  g.add(orb);
+  const aura = new THREE.Mesh(
+    new THREE.SphereGeometry(0.72, 12, 10),
+    new THREE.MeshBasicMaterial({ color: '#f97316', transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending })
+  );
+  aura.position.y = 0.55;
+  g.add(aura);
+  return g;
+}
+
+export function buildBlueShellMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(0.66, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.65),
+    new THREE.MeshPhysicalMaterial({ color: '#0284c7', roughness: 0.18, clearcoat: 1 })
+  );
+  dome.position.y = 0.2;
+  g.add(dome);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.62, 0.11, 8, 18),
+    new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.35 })
+  );
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.22;
+  g.add(rim);
+  const spike = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.36, 8), new THREE.MeshStandardMaterial({ color: '#f8fafc' }));
+  spike.position.y = 0.88;
+  g.add(spike);
+  return g;
+}
+
+export function buildPurpleShellMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(0.64, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.65),
+    new THREE.MeshPhysicalMaterial({ color: '#9333ea', emissive: '#7e22ce', emissiveIntensity: 0.35, roughness: 0.2, clearcoat: 1 })
+  );
+  dome.position.y = 0.2;
+  g.add(dome);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.6, 0.11, 8, 18),
+    new THREE.MeshStandardMaterial({ color: '#a3e635', roughness: 0.35 })
+  );
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.22;
+  g.add(rim);
+  return g;
+}
+
+export function buildCannonballMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.54, 16, 14),
+    new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.8, roughness: 0.22 })
+  );
+  ball.position.y = 0.56;
+  g.add(ball);
+  return g;
+}
+
+export function buildHoneyPuddleMesh(): THREE.Group {
+  const g = new THREE.Group();
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    const r = 1.45 + Math.sin(a * 3) * 0.32 + Math.cos(a * 2) * 0.22;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(-Math.PI / 2);
+  const puddle = new THREE.Mesh(
+    geo,
+    new THREE.MeshPhysicalMaterial({
+      color: '#a855f7',
+      emissive: '#6b21a8',
+      emissiveIntensity: 0.3,
+      roughness: 0.12,
+      clearcoat: 1,
+    })
+  );
+  puddle.position.y = 0.08;
+  g.add(puddle);
+  return g;
 }
 
 export function buildItemBoxMesh(textures: ProceduralTextureSet): THREE.Group {

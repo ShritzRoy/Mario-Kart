@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CloudRain,
   Copy,
+  Crown,
   Eye,
   EyeOff,
   Film,
@@ -22,6 +23,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Settings,
   Smartphone,
   Sparkles,
   Sun,
@@ -34,11 +36,22 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
+import { CameraRainOverlay } from './components/CameraRainOverlay.tsx';
 import { CharacterPortrait } from './components/CharacterPortrait.tsx';
-import { CircularAbilityWheel, type DeviceTier } from './components/CircularAbilityWheel.tsx';
+import {
+  CircularAbilityWheel,
+  ItemSvgIcon,
+  itemVisual,
+  type DeviceTier,
+} from './components/CircularAbilityWheel.tsx';
+import { LevelUpCelebrationModal } from './components/LevelUpCelebrationModal.tsx';
 import { MiniMap } from './components/MiniMap.tsx';
 import { MobileControls } from './components/MobileControls.tsx';
+import { NintendoSettingsModal } from './components/NintendoSettingsModal.tsx';
+import { OnlineLeaderboardModal } from './components/OnlineLeaderboardModal.tsx';
+import { OnlineRoomsModal } from './components/OnlineRoomsModal.tsx';
 import { PixelFlagTransition } from './components/PixelFlagTransition.tsx';
+import { RacerProfileHeader } from './components/RacerProfileHeader.tsx';
 import { SpeedometerGauge } from './components/SpeedometerGauge.tsx';
 import { VehicleCardIcon } from './components/VehicleCardIcon.tsx';
 import { WhiteFlagButtonWave } from './components/WhiteFlagButtonWave.tsx';
@@ -47,24 +60,40 @@ import {
   type ControlMode,
   type GameModeType,
   type HudSnapshot,
+  type PaddockStage,
 } from './game/engine.ts';
 import { MAPS, WEATHER_OPTIONS, type MapId, type WeatherChoice } from './game/maps.ts';
-import { getRacerById, ROSTER, type WeightClass } from './game/roster.ts';
+import { getRacerById, getRacerWithVariant, ROSTER, type WeightClass } from './game/roster.ts';
 import { getVehicleById, VEHICLES, type VehicleId } from './game/vehicles.ts';
 import { useMultiplayerRoom } from './hooks/useMultiplayerRoom.ts';
-import type { NetRoomSnapshot } from './shared/protocol.ts';
+import {
+  fetchCloudProfile,
+  getCachedProfile,
+  getStoredUsername,
+  saveCloudProfile,
+  setStoredUsername,
+} from './services/cloudSave.ts';
+import type { CloudPlayerProfile, HitNoticeKind, NetRoomSnapshot } from './shared/protocol.ts';
 
 type FilterTab = 'All' | WeightClass;
 
 const INITIAL_HUD: HudSnapshot = {
   mode: 'title',
   paddockStage: 'character',
+  selectedVariantId: 'classic',
   selectedVehicleId: 'standard_kart',
   gameMode: 'grand_prix',
   mapId: 'plaza',
   weatherChoice: 'sunny',
   activeWeather: 'sunny',
+  rainFactor: 0,
+  sunGlare: { visible: false, x: 50, y: 50, intensity: 0 },
   controlMode: 'keyboard',
+  smartSteering: false,
+  autoAccel: false,
+  autoUseItem: false,
+  cameraTilt: true,
+  soundMuted: false,
   rank: 1,
   totalRacers: 8,
   lap: 1,
@@ -120,7 +149,7 @@ function generateRoomCode(): string {
 }
 
 const TITLE_MODES: {
-  id: GameModeType;
+  id: GameModeType | 'leaderboard';
   label: string;
   desc: string;
   accent: string;
@@ -150,9 +179,16 @@ const TITLE_MODES: {
   {
     id: 'online_room',
     label: 'Online Room',
-    desc: 'Cross-device multiplayer with a 4-letter room code.',
+    desc: 'Browse live cloud rooms or join with a 4-letter room code.',
     accent: '#f472b6',
     diamondBg: 'linear-gradient(135deg, #f472b6, #9333ea)',
+  },
+  {
+    id: 'leaderboard',
+    label: 'Leaderboard',
+    desc: 'Global online cloud rankings of all players by level & playtime!',
+    accent: '#f59e0b',
+    diamondBg: 'linear-gradient(135deg, #facc15, #b45309)',
   },
 ];
 
@@ -162,6 +198,7 @@ export default function App() {
 
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [selectedId, setSelectedId] = useState<string>('mario');
+  const [selectedVariantId, setSelectedVariantId] = useState<string>('classic');
   const [selectedVehicleId, setSelectedVehicleId] = useState<VehicleId>('standard_kart');
   const [vehiclePage, setVehiclePage] = useState<0 | 1>(0);
   const [selectedMap, setSelectedMap] = useState<MapId>('plaza');
@@ -170,32 +207,118 @@ export default function App() {
   const [paddockUiVisible, setPaddockUiVisible] = useState<boolean>(true);
   const [muted, setMuted] = useState<boolean>(false);
   const [flagActive, setFlagActive] = useState<boolean>(false);
-  const [hoveredTitleMode, setHoveredTitleMode] = useState<GameModeType>('grand_prix');
+  const [hoveredTitleMode, setHoveredTitleMode] = useState<GameModeType | 'leaderboard'>('grand_prix');
   const [onlineModalOpen, setOnlineModalOpen] = useState<boolean>(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState<boolean>(false);
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [screenFading, setScreenFading] = useState<boolean>(false);
+  const [levelUpLevel, setLevelUpLevel] = useState<number | null>(null);
 
-  // Exclusive Cross-Device Controls & Fullscreen / Landscape State
+  // Cloud Player Profile & Online Saves State
+  const [profile, setProfile] = useState<CloudPlayerProfile>(getCachedProfile);
+  const hasAwardedRaceXpRef = useRef<boolean>(false);
+
+  // Exclusive Cross-Device Controls, Assists & Fullscreen State
   const [controlMode, setControlMode] = useState<ControlMode>(() => {
     if (typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
       return 'mobile_buttons';
     }
     return 'keyboard';
   });
+  const [smartSteering, setSmartSteering] = useState<boolean>(false);
   const [autoAccel, setAutoAccel] = useState<boolean>(false);
+  const [autoUseItem, setAutoUseItem] = useState<boolean>(false);
+  const [cameraTilt, setCameraTilt] = useState<boolean>(true);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isPortraitMobile, setIsPortraitMobile] = useState<boolean>(false);
   const [isCompactViewport, setIsCompactViewport] = useState<boolean>(false);
   const [deviceTier, setDeviceTier] = useState<DeviceTier>('desktop');
 
   // Online Room Multiplayer State
-  const [playerName, setPlayerName] = useState<string>('Racer');
+  const [playerName, setPlayerName] = useState<string>(() => getStoredUsername());
   const [roomCodeInput, setRoomCodeInput] = useState<string>('');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const mpStartTriggeredRef = useRef<boolean>(false);
+
+  // Load initial cloud profile on start
+  useEffect(() => {
+    const currentName = getStoredUsername();
+    fetchCloudProfile(currentName).then((p) => {
+      setProfile(p);
+      setPlayerName(p.username);
+    });
+  }, []);
+
+  const handleUpdateUsername = (newName: string) => {
+    setStoredUsername(newName);
+    setPlayerName(newName);
+    fetchCloudProfile(newName).then(setProfile);
+  };
+
+  // Playtime accumulation & periodic cloud autosave
+  useEffect(() => {
+    const secTimer = setInterval(() => {
+      setProfile((prev) => ({
+        ...prev,
+        playtimeSeconds: prev.playtimeSeconds + 1,
+      }));
+    }, 1000);
+
+    const saveTimer = setInterval(() => {
+      saveCloudProfile({
+        username: profile.username,
+        playtimeGainSec: 25,
+        favoriteCharacter: selectedId,
+        favoriteVehicle: selectedVehicleId,
+      });
+    }, 25000);
+
+    return () => {
+      clearInterval(secTimer);
+      clearInterval(saveTimer);
+    };
+  }, [profile.username, selectedId, selectedVehicleId]);
+
+  // Race Finish XP award & Level Up celebration
+  useEffect(() => {
+    if (hud.mode === 'finished' && !hasAwardedRaceXpRef.current) {
+      hasAwardedRaceXpRef.current = true;
+      const base = 100;
+      const rankBonus =
+        hud.rank === 1 ? 150 : hud.rank === 2 ? 100 : hud.rank === 3 ? 60 : 30;
+      const xpGain = base + rankBonus;
+
+      saveCloudProfile({
+        username: profile.username,
+        xpGain,
+        raceFinished: true,
+        won: hud.rank === 1,
+        podium: hud.rank <= 3,
+        favoriteCharacter: selectedId,
+        favoriteVehicle: selectedVehicleId,
+      }).then((res) => {
+        if (res?.profile) {
+          setProfile(res.profile);
+          if (res.leveledUp) {
+            setLevelUpLevel(res.newLevel);
+          }
+        }
+      });
+    } else if (hud.mode === 'racing' || hud.mode === 'countdown') {
+      hasAwardedRaceXpRef.current = false;
+    }
+  }, [hud.mode, hud.rank, profile.username, selectedId, selectedVehicleId]);
   const pendingFlagActionRef = useRef<
     | {
         type: 'race';
-        remotePlayers: { id: string; name: string; characterId: string; vehicleId?: string; slotIndex: number }[];
+        remotePlayers: {
+          id: string;
+          name: string;
+          characterId: string;
+          variantId?: string;
+          vehicleId?: string;
+          slotIndex: number;
+        }[];
         gameMode: GameModeType;
       }
     | { type: 'paddock' }
@@ -203,7 +326,10 @@ export default function App() {
     | null
   >(null);
 
-  const selectedSpec = useMemo(() => getRacerById(selectedId), [selectedId]);
+  const selectedSpec = useMemo(
+    () => getRacerWithVariant(selectedId, selectedVariantId),
+    [selectedId, selectedVariantId]
+  );
   const selectedVehicle = useMemo(() => getVehicleById(selectedVehicleId), [selectedVehicleId]);
   const combinedBars = useMemo(() => {
     const clampBar = (base100: number, delta: number) =>
@@ -228,6 +354,24 @@ export default function App() {
     const engine = engineRef.current;
     if (!engine) return;
 
+    if (room.mapId && (['plaza', 'stadium', 'meadow', 'skyline'] as string[]).includes(room.mapId)) {
+      const mId = room.mapId as MapId;
+      setSelectedMap((prev) => {
+        if (prev !== mId) engine.loadMap(mId);
+        return mId;
+      });
+    }
+    if (
+      room.weatherChoice &&
+      (['sunny', 'sunset', 'rainy', 'night', 'dynamic'] as string[]).includes(room.weatherChoice)
+    ) {
+      const wId = room.weatherChoice as WeatherChoice;
+      setSelectedWeather((prev) => {
+        if (prev !== wId) engine.setWeather(wId);
+        return wId;
+      });
+    }
+
     if (room.phase === 'countdown' && !mpStartTriggeredRef.current) {
       mpStartTriggeredRef.current = true;
       setOnlineModalOpen(false);
@@ -237,6 +381,7 @@ export default function App() {
           id: p.id,
           name: p.name,
           characterId: p.characterId,
+          variantId: p.variantId,
           vehicleId: p.vehicleId,
           slotIndex: p.slotIndex,
         })),
@@ -253,7 +398,7 @@ export default function App() {
   }, []);
 
   const handleHitNotice = useCallback(
-    (targetId: string, _attackerId: string, kind: 'shell' | 'banana' | 'star') => {
+    (targetId: string, _attackerId: string, kind: HitNoticeKind) => {
       engineRef.current?.applyRemoteHit(targetId, kind);
     },
     []
@@ -271,6 +416,10 @@ export default function App() {
       setHud(snap);
     });
     engine.setControlMode(controlMode);
+    engine.setSmartSteering(smartSteering);
+    engine.setAutoAccel(autoAccel);
+    engine.setAutoUseItem(autoUseItem);
+    engine.setCameraTilt(cameraTilt);
     engineRef.current = engine;
 
     const params = new URLSearchParams(window.location.search);
@@ -281,7 +430,7 @@ export default function App() {
       engine.setGameMode('online_room');
       engine.enterPaddock('character');
       setOnlineModalOpen(true);
-      mp.joinRoom(clean, 'MobileRacer', 'mario', 'standard_kart');
+      mp.joinRoom(clean, 'MobileRacer', 'mario', 'standard_kart', 'classic');
     }
 
     return () => {
@@ -308,14 +457,26 @@ export default function App() {
     }
   }, [mp.connected, mp.playerId, mp.sendKartState, mp.spawnHazard, mp.removeHazard, mp.hitPlayer]);
 
-  // Sync exclusive ControlMode & Auto-Accel
+  // Sync exclusive ControlMode & Gameplay Assists
   useEffect(() => {
     engineRef.current?.setControlMode(controlMode);
   }, [controlMode]);
 
   useEffect(() => {
+    engineRef.current?.setSmartSteering(smartSteering);
+  }, [smartSteering]);
+
+  useEffect(() => {
     engineRef.current?.setAutoAccel(autoAccel);
   }, [autoAccel]);
+
+  useEffect(() => {
+    engineRef.current?.setAutoUseItem(autoUseItem);
+  }, [autoUseItem]);
+
+  useEffect(() => {
+    engineRef.current?.setCameraTilt(cameraTilt);
+  }, [cameraTilt]);
 
   // Track Portrait vs Landscape + Device Tier + Fullscreen State
   useEffect(() => {
@@ -369,7 +530,8 @@ export default function App() {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       if (e.code === 'Escape') {
-        if (hud.mode === 'racing') engineRef.current?.setPaused(true);
+        if (settingsOpen) setSettingsOpen(false);
+        else if (hud.mode === 'racing') engineRef.current?.setPaused(true);
         else if (hud.mode === 'paused') engineRef.current?.setPaused(false);
         else if (onlineModalOpen) setOnlineModalOpen(false);
       } else if (e.code === 'KeyH' && hud.mode === 'paddock') {
@@ -379,12 +541,19 @@ export default function App() {
         hud.mode === 'paddock' &&
         !flagActive &&
         !mp.room &&
-        !onlineModalOpen
+        !onlineModalOpen &&
+        !settingsOpen
       ) {
         if (hud.paddockStage === 'character') {
           engineRef.current?.audio.playSelect();
           engineRef.current?.setPaddockStage('vehicle');
-        } else {
+        } else if (hud.paddockStage === 'vehicle') {
+          engineRef.current?.audio.playSelect();
+          engineRef.current?.setPaddockStage('course');
+        } else if (hud.paddockStage === 'course') {
+          engineRef.current?.audio.playSelect();
+          engineRef.current?.setPaddockStage('weather');
+        } else if (hud.paddockStage === 'weather') {
           triggerSoloRace();
         }
       }
@@ -396,7 +565,7 @@ export default function App() {
   // Gamepad Paddock Grid Navigation
   const padNavCooldownRef = useRef(0);
   useEffect(() => {
-    if (hud.mode !== 'paddock' || flagActive || onlineModalOpen) return;
+    if (hud.mode !== 'paddock' || flagActive || onlineModalOpen || settingsOpen) return;
     let rafId = 0;
     const pollMenuPad = (now: number) => {
       const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -421,7 +590,7 @@ export default function App() {
               if (down) next = (idx + 6) % filteredRoster.length;
               handleSelectCharacter(filteredRoster[next].id);
             }
-          } else {
+          } else if (hud.paddockStage === 'vehicle') {
             const idx = pagedVehicles.findIndex((v) => v.id === selectedVehicleId);
             const cur = idx >= 0 ? idx : 0;
             let next = cur;
@@ -430,21 +599,53 @@ export default function App() {
             if (up) next = (cur - 4 + pagedVehicles.length) % pagedVehicles.length;
             if (down) next = (cur + 4) % pagedVehicles.length;
             if (pagedVehicles[next]) handleSelectVehicle(pagedVehicles[next].id);
+          } else if (hud.paddockStage === 'course') {
+            const idx = MAPS.findIndex((m) => m.id === selectedMap);
+            const cur = idx >= 0 ? idx : 0;
+            let next = cur;
+            if (left) next = (cur - 1 + MAPS.length) % MAPS.length;
+            if (right) next = (cur + 1) % MAPS.length;
+            if (up) next = (cur - 4 + MAPS.length) % MAPS.length;
+            if (down) next = (cur + 4) % MAPS.length;
+            if (MAPS[next]) handleSelectMap(MAPS[next].id);
+          } else if (hud.paddockStage === 'weather') {
+            const idx = WEATHER_OPTIONS.findIndex((w) => w.id === selectedWeather);
+            const cur = idx >= 0 ? idx : 0;
+            let next = cur;
+            if (left || up) next = (cur - 1 + WEATHER_OPTIONS.length) % WEATHER_OPTIONS.length;
+            if (right || down) next = (cur + 1) % WEATHER_OPTIONS.length;
+            if (WEATHER_OPTIONS[next]) handleSelectWeather(WEATHER_OPTIONS[next].id);
           }
         } else if (pad.buttons[0]?.pressed) {
           padNavCooldownRef.current = now + 380;
           if (hud.paddockStage === 'character') {
             engineRef.current?.audio.playSelect();
             engineRef.current?.setPaddockStage('vehicle');
-          } else if (mp.connected && localRoomPlayer?.isHost) {
-            mp.startRace();
-          } else if (!mp.connected) {
-            triggerSoloRace();
+          } else if (hud.paddockStage === 'vehicle') {
+            engineRef.current?.audio.playSelect();
+            engineRef.current?.setPaddockStage('course');
+          } else if (hud.paddockStage === 'course') {
+            engineRef.current?.audio.playSelect();
+            engineRef.current?.setPaddockStage('weather');
+          } else if (hud.paddockStage === 'weather') {
+            if (mp.connected && localRoomPlayer?.isHost) {
+              mp.startRace();
+            } else if (!mp.connected) {
+              triggerSoloRace();
+            }
           }
-        } else if (pad.buttons[1]?.pressed && hud.paddockStage === 'vehicle') {
+        } else if (pad.buttons[1]?.pressed) {
           padNavCooldownRef.current = now + 350;
-          engineRef.current?.audio.playSelect();
-          engineRef.current?.setPaddockStage('character');
+          if (hud.paddockStage === 'weather') {
+            engineRef.current?.audio.playSelect();
+            engineRef.current?.setPaddockStage('course');
+          } else if (hud.paddockStage === 'course') {
+            engineRef.current?.audio.playSelect();
+            engineRef.current?.setPaddockStage('vehicle');
+          } else if (hud.paddockStage === 'vehicle') {
+            engineRef.current?.audio.playSelect();
+            engineRef.current?.setPaddockStage('character');
+          }
         }
       }
       rafId = requestAnimationFrame(pollMenuPad);
@@ -455,9 +656,19 @@ export default function App() {
 
   const handleSelectCharacter = (id: string) => {
     setSelectedId(id);
+    setSelectedVariantId('classic');
+    engineRef.current?.selectPaddockVariant('classic', false);
     engineRef.current?.selectPaddockCharacter(id, true);
     if (mp.connected) {
-      mp.selectCharacter(id);
+      mp.selectCharacter(id, 'classic');
+    }
+  };
+
+  const handleSelectVariant = (variantId: string) => {
+    setSelectedVariantId(variantId);
+    engineRef.current?.selectPaddockVariant(variantId, true);
+    if (mp.connected) {
+      mp.selectCharacter(selectedId, variantId);
     }
   };
 
@@ -473,17 +684,27 @@ export default function App() {
     setSelectedMap(mapId);
     engineRef.current?.loadMap(mapId);
     engineRef.current?.audio.playSelect();
+    if (mp.connected && localRoomPlayer?.isHost) {
+      mp.setCourse(mapId, selectedWeather);
+    }
   };
 
   const handleSelectWeather = (w: WeatherChoice) => {
     setSelectedWeather(w);
     engineRef.current?.setWeather(w);
     engineRef.current?.audio.playSelect();
+    if (mp.connected && localRoomPlayer?.isHost) {
+      mp.setCourse(selectedMap, w);
+    }
   };
 
-  const handleSelectTitleMode = (gm: GameModeType) => {
+  const handleSelectTitleMode = (gm: GameModeType | 'leaderboard') => {
     engineRef.current?.audio.init();
     engineRef.current?.audio.playSelect();
+    if (gm === 'leaderboard') {
+      setLeaderboardOpen(true);
+      return;
+    }
     engineRef.current?.setGameMode(gm);
     if (gm === 'online_room') {
       transitionToScreen(() => {
@@ -497,12 +718,13 @@ export default function App() {
     }
   };
 
-  const toggleMute = () => {
-    const next = !muted;
-    setMuted(next);
+  const applyMuted = (nextMuted: boolean) => {
+    setMuted(nextMuted);
     engineRef.current?.audio.init();
-    engineRef.current?.audio.setMuted(next);
+    engineRef.current?.setSoundMuted(nextMuted);
   };
+
+  const toggleMute = () => applyMuted(!muted);
 
   const triggerSoloRace = () => {
     engineRef.current?.audio.init();
@@ -517,14 +739,14 @@ export default function App() {
   const handleCreateRoom = () => {
     const code = generateRoomCode();
     setRoomCodeInput(code);
-    mp.joinRoom(code, playerName || 'Host', selectedId, selectedVehicleId);
+    mp.joinRoom(code, playerName || 'Host', selectedId, selectedVehicleId, selectedVariantId);
   };
 
   const handleJoinCode = () => {
     const code = (roomCodeInput || 'MK88').toUpperCase().trim();
     if (!code) return;
     setRoomCodeInput(code);
-    mp.joinRoom(code, playerName || 'Driver', selectedId, selectedVehicleId);
+    mp.joinRoom(code, playerName || 'Driver', selectedId, selectedVehicleId, selectedVariantId);
   };
 
   const copyRoomInvite = () => {
@@ -545,7 +767,8 @@ export default function App() {
         action.remotePlayers,
         false,
         action.gameMode,
-        selectedVehicleId
+        selectedVehicleId,
+        selectedVariantId
       );
     } else if (action.type === 'paddock') {
       engineRef.current.returnToPaddock();
@@ -553,7 +776,7 @@ export default function App() {
       engineRef.current.returnToTitle();
     }
     pendingFlagActionRef.current = null;
-  }, [selectedId, selectedVehicleId, playerName]);
+  }, [selectedId, selectedVariantId, selectedVehicleId, playerName]);
 
   const handleFlagComplete = useCallback(() => {
     setFlagActive(false);
@@ -568,6 +791,7 @@ export default function App() {
   const handleReturnToTitle = () => {
     mpStartTriggeredRef.current = false;
     setOnlineModalOpen(false);
+    setSettingsOpen(false);
     pendingFlagActionRef.current = { type: 'title' };
     setFlagActive(true);
   };
@@ -579,9 +803,15 @@ export default function App() {
   const minimapSize = deviceTier === 'mobile' ? 82 : deviceTier === 'tablet' ? 112 : 140;
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#0284c7] text-white select-none font-sans">
+    <div className="relative w-screen h-screen overflow-hidden bg-[#0284c7] text-white select-none font-mk">
       {/* Dedicated Isolated WebGL Canvas Mount */}
       <div ref={mountRef} className="absolute inset-0 w-full h-full" />
+
+      {/* Dynamic Camera Rain Condensation & Ray-Traced Solar Glare */}
+      <CameraRainOverlay
+        rainFactor={hud.rainFactor ?? (hud.activeWeather === 'rainy' ? 1 : 0)}
+        sunGlare={hud.sunGlare}
+      />
 
       {/* Smooth Screen Transition Crossfade */}
       <div
@@ -702,7 +932,20 @@ export default function App() {
               </div>
             </div>
 
+            {/* Top-Middle: Player Online Profile & Cloud Level Status */}
+            <div className="pointer-events-auto flex items-center justify-center flex-1 max-w-sm px-2">
+              <RacerProfileHeader profile={profile} onUpdateUsername={handleUpdateUsername} />
+            </div>
+
             <div className="pointer-events-auto flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setSettingsOpen(true)}
+                title="Nintendo Settings"
+                className="p-2 sm:p-2.5 rounded-xl border border-white/25 hover:border-amber-300/80 transition cursor-pointer"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.85)' }}
+              >
+                <Settings className="w-4 h-4 text-amber-300" />
+              </button>
               <button
                 onClick={enterLandscapeFullscreen}
                 title="Landscape Fullscreen"
@@ -774,6 +1017,7 @@ export default function App() {
                       {m.id === 'vs_race' && <Flag className="w-4 h-4 sm:w-5 sm:h-5" />}
                       {m.id === 'time_trial' && <Timer className="w-4 h-4 sm:w-5 sm:h-5" />}
                       {m.id === 'online_room' && <Wifi className="w-4 h-4 sm:w-5 sm:h-5" />}
+                      {m.id === 'leaderboard' && <Crown className="w-4 h-4 sm:w-5 sm:h-5" />}
                     </div>
                   </div>
 
@@ -817,15 +1061,22 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="pointer-events-auto flex items-center gap-2">
               <button
-                onClick={
-                  hud.paddockStage === 'vehicle'
-                    ? () => engineRef.current?.setPaddockStage('character')
-                    : handleReturnToTitle
-                }
+                onClick={() => {
+                  if (hud.paddockStage === 'weather') engineRef.current?.setPaddockStage('course');
+                  else if (hud.paddockStage === 'course') engineRef.current?.setPaddockStage('vehicle');
+                  else if (hud.paddockStage === 'vehicle') engineRef.current?.setPaddockStage('character');
+                  else handleReturnToTitle();
+                }}
                 className="px-3 py-1.5 sm:py-2 rounded-xl border border-white/35 hover:border-white/75 font-mk text-xs uppercase tracking-wider text-sky-200 mk-stroke-sm cursor-pointer"
                 style={{ backgroundColor: 'rgba(10, 15, 28, 0.35)' }}
               >
-                {hud.paddockStage === 'vehicle' ? '← Characters' : '← Title'}
+                {hud.paddockStage === 'weather'
+                  ? '← Course'
+                  : hud.paddockStage === 'course'
+                  ? '← Vehicles'
+                  : hud.paddockStage === 'vehicle'
+                  ? '← Drivers'
+                  : '← Title'}
               </button>
 
               <div
@@ -843,7 +1094,13 @@ export default function App() {
                 </span>
                 <span className="text-white/40">·</span>
                 <span className="font-mk text-[11px] sm:text-xs text-emerald-300 mk-stroke-sm">
-                  {hud.paddockStage === 'character' ? '1. Pick Driver' : '2. Pick Vehicle & Course'}
+                  {hud.paddockStage === 'character'
+                    ? '1. Pick Driver'
+                    : hud.paddockStage === 'vehicle'
+                    ? '2. Pick Vehicle'
+                    : hud.paddockStage === 'course'
+                    ? '3. Select Course'
+                    : '4. Race Conditions'}
                 </span>
               </div>
             </div>
@@ -860,6 +1117,15 @@ export default function App() {
               >
                 <Wifi className="w-3.5 h-3.5" />
                 <span>{mp.connected ? `Room ${mp.room?.roomCode} (${mp.room?.players.length ?? 1}/8)` : 'Online Room'}</span>
+              </button>
+
+              <button
+                onClick={() => setSettingsOpen(true)}
+                title="Settings"
+                className="p-2 rounded-xl border border-white/30 hover:border-amber-300/80 transition cursor-pointer"
+                style={{ backgroundColor: 'rgba(10, 15, 28, 0.3)' }}
+              >
+                <Settings className="w-4 h-4 text-amber-300" />
               </button>
 
               <button
@@ -899,17 +1165,169 @@ export default function App() {
             </div>
           </div>
 
-          {/* ===== STAGE 1: TRANSPARENT FLOATING CHARACTER SELECTION ===== */}
+          {/* ===== STAGE 1: IMPROVISED MARIO KART CHARACTER SELECTION (IMAGE_F22C807C + INVISIBLE TOUCH SCROLL) ===== */}
           {paddockUiVisible && hud.paddockStage === 'character' && (
-            <div className="my-auto flex flex-col md:flex-row items-center md:items-center justify-end md:justify-between gap-2 min-h-0 flex-1 py-1">
+            <div className="my-auto flex flex-col md:flex-row items-center md:items-stretch justify-end md:justify-between gap-2.5 min-h-0 flex-1 py-1">
+              {/* LEFT: Floating Transparent Character Bio, Special Item Badge & Outfit Variations */}
               <div
-                className={`pointer-events-auto w-full overflow-y-auto pr-1 space-y-2 ${
+                className={`pointer-events-auto no-scrollbar touch-pan-y overscroll-contain overflow-y-auto flex flex-col justify-between gap-2 ${
                   deviceTier === 'mobile'
-                    ? 'mt-auto max-w-[360px] max-h-[44vh]'
-                    : 'md:w-[445px] lg:w-[475px] max-h-[calc(100vh-145px)]'
+                    ? 'hidden'
+                    : 'w-full md:w-[375px] lg:w-[410px] max-h-[calc(100vh-145px)]'
                 }`}
               >
-                {/* Floating Weight Class Filter Tabs */}
+                <div className="space-y-2">
+                  {/* "Choose Your Racer!" Header */}
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="font-mk text-2xl lg:text-3xl italic tracking-tight text-amber-300 mk-stroke">
+                      Choose Your Racer!
+                    </h2>
+                  </div>
+
+                  {/* Character Nameplate + Bio + Special Item Card */}
+                  <div
+                    className="rounded-3xl border-2 border-white/30 p-3.5 space-y-2.5 shadow-2xl"
+                    style={{ backgroundColor: 'rgba(9, 15, 32, 0.42)' }}
+                  >
+                    <div className="flex items-start justify-between gap-2.5">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mk text-2xl uppercase tracking-wide text-white mk-stroke-sm">
+                            {selectedSpec.name}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] uppercase tracking-wider">
+                            {selectedSpec.weightClass}
+                          </span>
+                        </div>
+                        <div className="font-mk text-xs text-cyan-300 mk-stroke-sm">
+                          {selectedSpec.title} · {selectedSpec.activeVariant.label}
+                        </div>
+                      </div>
+
+                      {/* Special Item Showcase Circle (Image F22C807C style) */}
+                      <div className="flex flex-col items-center shrink-0">
+                        <div
+                          className="w-12 h-12 rounded-full border-2 border-white/80 flex items-center justify-center shadow-lg"
+                          style={{ backgroundColor: `${itemVisual(selectedSpec.specialItem).color}55` }}
+                          title={itemVisual(selectedSpec.specialItem).name}
+                        >
+                          <ItemSvgIcon item={selectedSpec.specialItem} iconSize={30} />
+                        </div>
+                        <span className="text-[9px] uppercase text-amber-200 mt-0.5 mk-stroke-sm">
+                          Special Item
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 2-Paragraph Bio Description */}
+                    <div className="space-y-1.5 text-xs leading-relaxed text-slate-100/95">
+                      <p>{selectedSpec.bio[0]}</p>
+                      <p className="text-amber-200/95">{selectedSpec.bio[1]}</p>
+                    </div>
+
+                    {/* Outfit / Color Variations Strip */}
+                    <div className="pt-1 border-t border-white/15">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] uppercase tracking-wider text-sky-300 mk-stroke-sm">
+                          Color Variations
+                        </span>
+                        <span className="text-[10px] text-amber-300 mk-stroke-sm">
+                          {selectedSpec.activeVariant.label}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {selectedSpec.variants.map((v) => {
+                          const vActive = selectedSpec.activeVariant.id === v.id;
+                          return (
+                            <button
+                              key={v.id}
+                              onClick={() => handleSelectVariant(v.id)}
+                              title={v.label}
+                              className={`relative w-8 h-8 rounded-full border-2 transition cursor-pointer flex items-center justify-center ${
+                                vActive
+                                  ? 'scale-110 border-white shadow-[0_0_12px_rgba(250,204,21,0.85)]'
+                                  : 'border-white/40 hover:scale-105 opacity-85 hover:opacity-100'
+                              }`}
+                              style={{
+                                background: `linear-gradient(135deg, ${v.primaryColor} 55%, ${v.outfitColor} 55%)`,
+                              }}
+                            >
+                              {vActive && <span className="w-2 h-2 rounded-full bg-white shadow" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Minimal Compact Stat Bars */}
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 pt-1">
+                      {[
+                        { label: 'SPD', val: selectedSpec.stats.topSpeed, col: '#ef4444' },
+                        { label: 'ACC', val: selectedSpec.stats.acceleration, col: '#38bdf8' },
+                        { label: 'HND', val: selectedSpec.stats.handling, col: '#22c55e' },
+                        { label: 'WGT', val: selectedSpec.stats.weight, col: '#facc15' },
+                      ].map((st) => (
+                        <div key={st.label} className="flex items-center gap-1.5 text-[10px]">
+                          <span className="w-7 text-white/95">{st.label}</span>
+                          <div className="flex-1 h-1.5 rounded-full bg-black/50 overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-300"
+                              style={{ width: `${st.val}%`, backgroundColor: st.col }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* RIGHT / MOBILE-BOTTOM: Floating Roster Grid + Mobile Compact Bio/Variants (Zero Visible Scrollbar!) */}
+              <div
+                className={`pointer-events-auto no-scrollbar touch-pan-y overscroll-contain overflow-y-auto space-y-2 flex flex-col justify-end md:justify-center ${
+                  deviceTier === 'mobile'
+                    ? 'mt-auto w-full max-w-[400px] max-h-[48vh]'
+                    : 'w-full md:w-[405px] lg:w-[435px] max-h-[calc(100vh-145px)]'
+                }`}
+              >
+                {/* Mobile Compact Header + Variations Strip */}
+                <div
+                  className="md:hidden rounded-2xl px-3 py-2 border border-white/25 space-y-1.5"
+                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.42)' }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mk text-sm uppercase text-amber-300 mk-stroke-sm truncate">
+                        {selectedSpec.name}
+                      </span>
+                      <span className="text-[10px] text-cyan-300 truncate">
+                        {selectedSpec.activeVariant.label}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {selectedSpec.variants.map((v) => (
+                        <button
+                          key={v.id}
+                          onClick={() => handleSelectVariant(v.id)}
+                          title={v.label}
+                          className={`w-5 h-5 rounded-full border transition cursor-pointer ${
+                            selectedSpec.activeVariant.id === v.id
+                              ? 'scale-110 border-white shadow'
+                              : 'border-white/40 opacity-80'
+                          }`}
+                          style={{
+                            background: `linear-gradient(135deg, ${v.primaryColor} 55%, ${v.outfitColor} 55%)`,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-[10px] leading-snug text-slate-100/90 line-clamp-2">
+                    {selectedSpec.bio[0]}
+                  </p>
+                </div>
+
+                {/* Weight Class Filter Tabs */}
                 <div className="flex flex-wrap items-center justify-between gap-1.5">
                   <div className="flex flex-wrap gap-1">
                     {(['All', 'All-Around', 'Lightweight', 'Heavyweight'] as FilterTab[]).map((tab) => (
@@ -926,12 +1344,12 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                  <span className="font-mk text-[11px] uppercase tracking-wider text-amber-300 mk-stroke-sm">
-                    {selectedSpec.weightClass}
+                  <span className="hidden sm:inline font-mk text-[11px] uppercase tracking-wider text-amber-300 mk-stroke-sm">
+                    {filteredRoster.length} Drivers
                   </span>
                 </div>
 
-                {/* Truly Transparent Floating 6-Column Portrait Grid */}
+                {/* Transparent Floating Roster Grid */}
                 <div className="grid grid-cols-6 gap-1.5">
                   {filteredRoster.map((racer) => {
                     const active = racer.id === selectedId;
@@ -942,81 +1360,28 @@ export default function App() {
                         title={`${racer.name} (${racer.weightClass})`}
                         className={`relative aspect-square rounded-xl border flex items-center justify-center p-1 transition cursor-pointer overflow-hidden ${
                           active
-                            ? 'scale-105 border-amber-300 bg-white/18 shadow-[0_0_14px_rgba(250,204,21,0.75)]'
-                            : 'border-white/20 bg-slate-950/20 hover:bg-white/10 hover:border-white/55 hover:scale-105'
+                            ? 'scale-105 border-amber-300 bg-white/22 shadow-[0_0_14px_rgba(250,204,21,0.75)]'
+                            : 'border-white/20 bg-slate-950/24 hover:bg-white/12 hover:border-white/55 hover:scale-105'
                         }`}
                       >
                         <WhiteFlagButtonWave active={active} compact />
                         <div className="relative z-10 drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
-                          <CharacterPortrait spec={racer} size={isCompactViewport ? 30 : 42} />
+                          <CharacterPortrait spec={racer} size={isCompactViewport ? 28 : 42} />
                         </div>
                       </button>
                     );
                   })}
                 </div>
-
-                {/* Minimal Transparent Character Name + Stat Bars */}
-                <div
-                  className="rounded-xl px-3 py-2 border border-white/25 flex flex-wrap items-center justify-between gap-x-3 gap-y-1"
-                  style={{ backgroundColor: 'rgba(8, 15, 32, 0.28)' }}
-                >
-                  <div className="flex items-baseline gap-2 min-w-0">
-                    <span className="font-mk text-sm sm:text-base uppercase tracking-wide text-amber-300 mk-stroke-sm truncate">
-                      {selectedSpec.name}
-                    </span>
-                    <span className="font-mk text-[10px] text-rose-300 mk-stroke-sm truncate">
-                      {selectedSpec.title}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2.5 flex-wrap">
-                    {[
-                      { label: 'SPD', val: selectedSpec.stats.topSpeed, col: '#ef4444' },
-                      { label: 'ACC', val: selectedSpec.stats.acceleration, col: '#38bdf8' },
-                      { label: 'HND', val: selectedSpec.stats.handling, col: '#22c55e' },
-                      { label: 'WGT', val: selectedSpec.stats.weight, col: '#facc15' },
-                    ].map((st) => (
-                      <div key={st.label} className="flex items-center gap-1 text-[9px] font-hud">
-                        <span className="font-bold text-white/95">{st.label}</span>
-                        <div className="w-8 sm:w-10 h-1.5 rounded-full bg-black/50 overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all duration-300"
-                            style={{ width: `${st.val}%`, backgroundColor: st.col }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Right Showcase Nameplate (Desktop shows beside centered-right 3D kart) */}
-              <div className="hidden md:flex flex-col items-end justify-end self-stretch pb-4 pr-2">
-                <div
-                  className="px-4 py-1.5 mb-2 font-mk text-xl uppercase tracking-wider text-slate-950 shadow-xl border-2 border-white"
-                  style={{
-                    background: 'linear-gradient(90deg, #facc15, #fde047)',
-                    clipPath: 'polygon(6% 0%, 100% 0%, 94% 100%, 0% 100%)',
-                  }}
-                >
-                  Characters
-                </div>
-                <div className="flex-1" />
-                <div
-                  className="px-6 py-2 rounded-2xl border border-white/25 font-mk text-xl uppercase tracking-wide text-amber-300 mk-stroke-sm"
-                  style={{ backgroundColor: 'rgba(15, 23, 42, 0.72)' }}
-                >
-                  {selectedSpec.name} <span className="text-sky-300 text-sm">· {selectedVehicle.name}</span>
-                </div>
               </div>
             </div>
           )}
 
-          {/* ===== STAGE 2: VEHICLE GARAGE SELECTION (MATCHING REFERENCE IMAGE 1) ===== */}
+          {/* ===== STAGE 2: VEHICLE GARAGE SELECTION ===== */}
           {paddockUiVisible && hud.paddockStage === 'vehicle' && (
             <div className="my-auto flex flex-col md:flex-row items-center md:items-stretch justify-end md:justify-between gap-3 min-h-0 flex-1 py-1">
               {/* LEFT: 4-Column Vehicle Grid with Rounded Golden Corner Brackets & Page Arrows */}
               <div
-                className={`pointer-events-auto flex flex-col justify-center gap-2 ${
+                className={`pointer-events-auto no-scrollbar touch-pan-y overscroll-contain flex flex-col justify-center gap-2 ${
                   deviceTier === 'mobile'
                     ? 'mt-auto w-full max-w-[390px] max-h-[46vh] overflow-y-auto'
                     : 'w-full md:w-[54%] max-w-[560px]'
@@ -1035,7 +1400,7 @@ export default function App() {
                       {selectedVehicle.category}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0 text-[8px] font-hud text-white">
+                  <div className="flex items-center gap-1.5 shrink-0 text-[8px] font-mk text-white">
                     <span>SPD {combinedBars.speed}</span>
                     <span>ACC {combinedBars.acceleration}</span>
                     <span>WGT {combinedBars.weight}</span>
@@ -1047,7 +1412,7 @@ export default function App() {
                   <button
                     onClick={() => setVehiclePage((p) => (p === 0 ? 1 : 0))}
                     title="Previous Vehicle Page"
-                    className="shrink-0 w-7 h-10 rounded-xl bg-amber-400 hover:bg-amber-300 border-2 border-white text-slate-950 flex items-center justify-center shadow-lg cursor-pointer"
+                    className="shrink-0 w-8 h-12 rounded-xl mk-arrow-btn flex items-center justify-center cursor-pointer"
                   >
                     <ChevronLeft className="w-5 h-5" />
                   </button>
@@ -1087,7 +1452,7 @@ export default function App() {
                   <button
                     onClick={() => setVehiclePage((p) => (p === 0 ? 1 : 0))}
                     title="Next Vehicle Page"
-                    className="shrink-0 w-7 h-10 rounded-xl bg-amber-400 hover:bg-amber-300 border-2 border-white text-slate-950 flex items-center justify-center shadow-lg cursor-pointer"
+                    className="shrink-0 w-8 h-12 rounded-xl mk-arrow-btn flex items-center justify-center cursor-pointer"
                   >
                     <ChevronRight className="w-5 h-5" />
                   </button>
@@ -1104,58 +1469,6 @@ export default function App() {
                       }`}
                     />
                   ))}
-                </div>
-
-                {/* Course & Dynamic Weather Selectors */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                  {MAPS.map((m) => {
-                    const active = selectedMap === m.id;
-                    return (
-                      <button
-                        key={m.id}
-                        onClick={() => handleSelectMap(m.id)}
-                        className={`px-2 py-1.5 rounded-xl border text-left transition cursor-pointer ${
-                          active
-                            ? 'border-amber-300 bg-white/18 shadow-[0_0_12px_rgba(250,204,21,0.45)]'
-                            : 'border-white/25 bg-slate-950/30 hover:bg-white/10 hover:border-white/55'
-                        }`}
-                      >
-                        <div className="flex items-center gap-1 text-[10px] font-mk uppercase tracking-tight text-cyan-200 mk-stroke-sm truncate">
-                          <MapIcon className="w-2.5 h-2.5 text-amber-300 shrink-0" />
-                          <span className="truncate">
-                            {m.name.split(' ')[0]} {m.name.split(' ')[1]}
-                          </span>
-                        </div>
-                        <div className="text-[9px] text-white/85 truncate">{m.theme}</div>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1">
-                  {WEATHER_OPTIONS.map((w) => {
-                    const active = selectedWeather === w.id;
-                    return (
-                      <button
-                        key={w.id}
-                        onClick={() => handleSelectWeather(w.id)}
-                        className={`px-2 py-1 rounded-lg border text-[10px] font-mk uppercase tracking-wider flex items-center gap-1 transition cursor-pointer mk-stroke-sm ${
-                          active
-                            ? 'border-white bg-white/25 text-white shadow'
-                            : 'border-white/20 bg-slate-950/25 text-white/85 hover:bg-white/10'
-                        }`}
-                      >
-                        <span style={{ color: w.accent }}>
-                          {w.id === 'sunny' && <Sun className="w-3 h-3" />}
-                          {w.id === 'sunset' && <Sunset className="w-3 h-3" />}
-                          {w.id === 'rainy' && <CloudRain className="w-3 h-3" />}
-                          {w.id === 'night' && <Moon className="w-3 h-3" />}
-                          {w.id === 'dynamic' && <Sparkles className="w-3 h-3" />}
-                        </span>
-                        <span>{w.label}</span>
-                      </button>
-                    );
-                  })}
                 </div>
               </div>
 
@@ -1218,7 +1531,187 @@ export default function App() {
             </div>
           )}
 
-          {/* Transparent Bottom Bar: Exclusive Single-Active Control Mode + Stage Next / OK Start Button */}
+          {/* ===== STAGE 3: 8 EXPANDED COURSES WITH 45° SLANTED WALL-RIDE ===== */}
+          {paddockUiVisible && hud.paddockStage === 'course' && (
+            <div className="my-auto flex flex-col items-center justify-center gap-2.5 sm:gap-3 min-h-0 flex-1 py-1 max-w-5xl mx-auto w-full">
+              <div className="flex items-center justify-between w-full px-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="font-mk text-2xl sm:text-3xl lg:text-4xl uppercase tracking-tight text-amber-300 mk-stroke">
+                      Select Course
+                    </h2>
+                    <span className="px-2.5 py-0.5 rounded-full bg-sky-500/80 text-white font-mk text-xs uppercase border border-sky-300">
+                      8 Circuits
+                    </span>
+                  </div>
+                  <p className="text-xs text-sky-200 mk-stroke-sm">
+                    {mp.connected && !localRoomPlayer?.isHost
+                      ? `Course selected by Host (${mp.room?.players.find((p) => p.isHost)?.name ?? 'Host'})`
+                      : 'Choose your championship circuit: asphalt ovals, 45° banked wall-rides, rainbow cosmos, or magma ridges'}
+                  </p>
+                </div>
+
+                {mp.connected && !localRoomPlayer?.isHost && (
+                  <span className="px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-300 text-amber-300 text-xs font-mk">
+                    Host Choice Only
+                  </span>
+                )}
+              </div>
+
+              {/* 4x2 Grid of 8 Circuits */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-3 w-full">
+                {MAPS.map((m) => {
+                  const isSelected = selectedMap === m.id;
+                  const disabled = mp.connected && !localRoomPlayer?.isHost;
+                  return (
+                    <button
+                      key={m.id}
+                      disabled={disabled}
+                      onClick={() => handleSelectMap(m.id)}
+                      className={`pointer-events-auto relative rounded-2xl border-2 p-3 text-left transition-all duration-200 flex flex-col justify-between overflow-hidden ${
+                        isSelected
+                          ? 'scale-[1.03] border-amber-300 bg-sky-950/85 shadow-[0_0_24px_rgba(250,204,21,0.65)]'
+                          : 'border-white/20 bg-slate-950/65 hover:border-white/60 hover:bg-slate-900/75'
+                      } ${disabled ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'}`}
+                      style={{ minHeight: '110px' }}
+                    >
+                      {/* Corner Brackets on Selected Course */}
+                      {isSelected && (
+                        <>
+                          <span className="pointer-events-none absolute top-0 left-0 w-3 h-3 border-t-[3px] border-l-[3px] border-amber-300 rounded-tl-lg" />
+                          <span className="pointer-events-none absolute top-0 right-0 w-3 h-3 border-t-[3px] border-r-[3px] border-amber-300 rounded-tr-lg" />
+                          <span className="pointer-events-none absolute bottom-0 left-0 w-3 h-3 border-b-[3px] border-l-[3px] border-amber-300 rounded-bl-lg" />
+                          <span className="pointer-events-none absolute bottom-0 right-0 w-3 h-3 border-b-[3px] border-r-[3px] border-amber-300 rounded-br-lg" />
+                        </>
+                      )}
+
+                      <div>
+                        <div className="flex items-center justify-between gap-1 mb-1">
+                          <span
+                            className="px-2 py-0.5 rounded-md text-[10px] font-mk uppercase tracking-wider"
+                            style={{
+                              backgroundColor:
+                                m.id === 'slanted_canyon'
+                                  ? 'rgba(239, 68, 68, 0.85)'
+                                  : m.id === 'rainbow_road'
+                                  ? 'rgba(168, 85, 247, 0.85)'
+                                  : m.id === 'shritiz_circuit'
+                                  ? 'rgba(245, 158, 11, 0.85)'
+                                  : 'rgba(30, 58, 138, 0.8)',
+                              color: '#ffffff',
+                            }}
+                          >
+                            {m.theme.toUpperCase()}
+                          </span>
+                          <span className="text-[10px] font-mk text-amber-200">
+                            {Math.round(m.lengthKm * 1000)}m
+                          </span>
+                        </div>
+
+                        <h3 className="font-mk text-sm sm:text-base uppercase tracking-wide text-white mk-stroke-sm truncate">
+                          {m.name}
+                        </h3>
+                      </div>
+
+                      <div className="mt-2 pt-1.5 border-t border-white/10 flex items-center justify-between">
+                        <span className="text-[10px] text-sky-300 truncate max-w-[130px]">
+                          {m.id === 'slanted_canyon'
+                            ? '★ 45° Banked Wall-Ride'
+                            : m.id === 'rainbow_road'
+                            ? '★ Starlight Road'
+                            : m.id === 'volcano_ridge'
+                            ? '★ Magma Geysers'
+                            : m.id === 'shritiz_circuit'
+                            ? '★ Monument Rock'
+                            : '★ Grand Prix Track'}
+                        </span>
+                        {isSelected && (
+                          <span className="w-5 h-5 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-xs font-black shrink-0">
+                            ✓
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ===== STAGE 4: DYNAMIC WEATHER & ATMOSPHERE SELECTION ===== */}
+          {paddockUiVisible && hud.paddockStage === 'weather' && (
+            <div className="my-auto flex flex-col items-center justify-center gap-2.5 sm:gap-3 min-h-0 flex-1 py-1 max-w-3xl mx-auto w-full">
+              <div className="flex items-center justify-between w-full px-2">
+                <div>
+                  <h2 className="font-mk text-2xl sm:text-3xl lg:text-4xl uppercase tracking-tight text-amber-300 mk-stroke">
+                    Race Conditions
+                  </h2>
+                  <p className="text-xs text-sky-200 mk-stroke-sm">
+                    {mp.connected && !localRoomPlayer?.isHost
+                      ? `Weather condition set by Host (${mp.room?.players.find((p) => p.isHost)?.name ?? 'Host'})`
+                      : 'Select weather lighting: solar ray flares, camera lens rain droplets, sunset amber glow, or night lights'}
+                  </p>
+                </div>
+
+                {mp.connected && !localRoomPlayer?.isHost && (
+                  <span className="px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-300 text-amber-300 text-xs font-mk">
+                    Host Choice Only
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 w-full">
+                {WEATHER_OPTIONS.map((w) => {
+                  const isSelected = selectedWeather === w.id;
+                  const disabled = mp.connected && !localRoomPlayer?.isHost;
+                  return (
+                    <button
+                      key={w.id}
+                      disabled={disabled}
+                      onClick={() => handleSelectWeather(w.id)}
+                      className={`pointer-events-auto relative rounded-2xl border-2 p-4 text-center transition-all duration-200 flex flex-col items-center justify-center gap-2 ${
+                        isSelected
+                          ? 'scale-105 border-amber-300 bg-sky-950/90 shadow-[0_0_24px_rgba(250,204,21,0.65)]'
+                          : 'border-white/20 bg-slate-950/65 hover:border-white/60 hover:bg-slate-900/75'
+                      } ${disabled ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'}`}
+                      style={{ minHeight: '130px' }}
+                    >
+                      <div
+                        className="w-12 h-12 rounded-2xl border-2 border-white/60 flex items-center justify-center shadow-lg"
+                        style={{ backgroundColor: `${w.accent}33`, color: w.accent }}
+                      >
+                        {w.id === 'sunny' && <Sun className="w-6 h-6" />}
+                        {w.id === 'sunset' && <Sunset className="w-6 h-6" />}
+                        {w.id === 'rainy' && <CloudRain className="w-6 h-6" />}
+                        {w.id === 'night' && <Moon className="w-6 h-6" />}
+                        {w.id === 'dynamic' && <Sparkles className="w-6 h-6" />}
+                      </div>
+
+                      <div className="font-mk text-sm uppercase tracking-wide text-white mk-stroke-sm">
+                        {w.label}
+                      </div>
+
+                      <div className="text-[10px] text-slate-300 leading-tight">
+                        {w.id === 'sunny' && 'Solar Glare'}
+                        {w.id === 'sunset' && 'Golden Rays'}
+                        {w.id === 'rainy' && 'Lens Droplets'}
+                        {w.id === 'night' && 'Floodlights'}
+                        {w.id === 'dynamic' && 'Day to Night'}
+                      </div>
+
+                      {isSelected && (
+                        <span className="w-5 h-5 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-xs font-black shadow mt-1">
+                          ✓
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Transparent Bottom Bar: Exclusive Single-Active Control Mode + Stage Progression Buttons */}
           <div className="pointer-events-auto flex flex-wrap items-center justify-between gap-2">
             <div
               className="rounded-2xl border border-white/25 px-2.5 sm:px-3 py-1.5 sm:py-2 flex flex-wrap items-center gap-1 sm:gap-1.5 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
@@ -1262,9 +1755,12 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2 ml-auto">
-              {hud.paddockStage === 'character' ? (
+              {hud.paddockStage === 'character' && (
                 <button
-                  onClick={() => engineRef.current?.setPaddockStage('vehicle')}
+                  onClick={() => {
+                    engineRef.current?.audio.playSelect();
+                    engineRef.current?.setPaddockStage('vehicle');
+                  }}
                   className="group relative overflow-hidden px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl border-2 border-amber-300 bg-slate-900/80 font-mk text-sm md:text-base uppercase tracking-wider shadow-2xl flex items-center gap-2 transition cursor-pointer"
                 >
                   <WhiteFlagButtonWave active />
@@ -1272,14 +1768,73 @@ export default function App() {
                   <span className="relative z-10 text-slate-950">Next: Vehicles</span>
                   <ArrowRight className="relative z-10 w-4 h-4 text-slate-950" />
                 </button>
-              ) : (
+              )}
+
+              {hud.paddockStage === 'vehicle' && (
                 <>
                   <button
-                    onClick={() => engineRef.current?.setPaddockStage('character')}
+                    onClick={() => {
+                      engineRef.current?.audio.playSelect();
+                      engineRef.current?.setPaddockStage('character');
+                    }}
                     className="px-3.5 py-2.5 rounded-2xl border border-white/30 bg-slate-900/65 hover:bg-slate-800/80 font-mk text-xs uppercase tracking-wider text-cyan-200 mk-stroke-sm flex items-center gap-1.5 cursor-pointer"
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
                     <span>Drivers</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      engineRef.current?.audio.playSelect();
+                      engineRef.current?.setPaddockStage('course');
+                    }}
+                    className="group relative overflow-hidden px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl border-2 border-amber-300 bg-slate-900/80 font-mk text-sm md:text-base uppercase tracking-wider shadow-2xl flex items-center gap-2 transition cursor-pointer"
+                  >
+                    <WhiteFlagButtonWave active />
+                    <MapIcon className="relative z-10 w-4 h-4 text-slate-950" />
+                    <span className="relative z-10 text-slate-950">Next: Course</span>
+                    <ArrowRight className="relative z-10 w-4 h-4 text-slate-950" />
+                  </button>
+                </>
+              )}
+
+              {hud.paddockStage === 'course' && (
+                <>
+                  <button
+                    onClick={() => {
+                      engineRef.current?.audio.playSelect();
+                      engineRef.current?.setPaddockStage('vehicle');
+                    }}
+                    className="px-3.5 py-2.5 rounded-2xl border border-white/30 bg-slate-900/65 hover:bg-slate-800/80 font-mk text-xs uppercase tracking-wider text-cyan-200 mk-stroke-sm flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Vehicles</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      engineRef.current?.audio.playSelect();
+                      engineRef.current?.setPaddockStage('weather');
+                    }}
+                    className="group relative overflow-hidden px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl border-2 border-amber-300 bg-slate-900/80 font-mk text-sm md:text-base uppercase tracking-wider shadow-2xl flex items-center gap-2 transition cursor-pointer"
+                  >
+                    <WhiteFlagButtonWave active />
+                    <Sun className="relative z-10 w-4 h-4 text-slate-950" />
+                    <span className="relative z-10 text-slate-950">Next: Weather</span>
+                    <ArrowRight className="relative z-10 w-4 h-4 text-slate-950" />
+                  </button>
+                </>
+              )}
+
+              {hud.paddockStage === 'weather' && (
+                <>
+                  <button
+                    onClick={() => {
+                      engineRef.current?.audio.playSelect();
+                      engineRef.current?.setPaddockStage('course');
+                    }}
+                    className="px-3.5 py-2.5 rounded-2xl border border-white/30 bg-slate-900/65 hover:bg-slate-800/80 font-mk text-xs uppercase tracking-wider text-cyan-200 mk-stroke-sm flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Course</span>
                   </button>
                   <button
                     onClick={mp.connected ? () => mp.startRace() : triggerSoloRace}
@@ -1305,138 +1860,44 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== ONLINE ROOM MODAL (SEPARATE FROM MAIN UI) ==================== */}
-      {onlineModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ backgroundColor: 'rgba(6, 10, 20, 0.82)' }}
-        >
-          <div
-            className="w-full max-w-md rounded-3xl border border-white/25 p-5 shadow-2xl space-y-4"
-            style={{ backgroundColor: '#0f172a' }}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Wifi className="w-5 h-5 text-sky-400" />
-                <h2 className="text-lg font-black uppercase tracking-wide">Online Room</h2>
-              </div>
-              <button
-                onClick={() => setOnlineModalOpen(false)}
-                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* ==================== ONLINE ROOMS MODAL (BROWSER + HOST/JOIN) ==================== */}
+      <OnlineRoomsModal
+        open={onlineModalOpen}
+        onClose={() => setOnlineModalOpen(false)}
+        playerName={playerName}
+        onPlayerNameChange={(name) => {
+          setPlayerName(name);
+          handleUpdateUsername(name);
+        }}
+        connected={mp.connected}
+        room={mp.room}
+        localPlayerId={mp.playerId ?? undefined}
+        onCreateRoom={(code) => {
+          const c = code || generateRoomCode();
+          setRoomCodeInput(c);
+          mp.joinRoom(c, playerName || 'Host', selectedId, selectedVehicleId, selectedVariantId);
+        }}
+        onJoinRoom={(code) => {
+          setRoomCodeInput(code);
+          mp.joinRoom(code, playerName || 'Driver', selectedId, selectedVehicleId, selectedVariantId);
+        }}
+        onLeaveRoom={() => mp.disconnect()}
+        onStartRace={() => mp.startRace()}
+      />
 
-            <div className="space-y-3">
-              <div>
-                <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                  Driver Name
-                </label>
-                <input
-                  value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
-                  maxLength={12}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-white/15 text-sm font-bold focus:outline-none focus:border-sky-400"
-                />
-              </div>
+      {/* ==================== ONLINE GLOBAL LEADERBOARD MODAL ==================== */}
+      <OnlineLeaderboardModal
+        open={leaderboardOpen}
+        onClose={() => setLeaderboardOpen(false)}
+        currentUsername={profile.username}
+      />
 
-              {!mp.connected ? (
-                <div className="space-y-2.5">
-                  <button
-                    onClick={handleCreateRoom}
-                    className="w-full py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
-                  >
-                    Create New Room Code
-                  </button>
-                  <div className="flex gap-2">
-                    <input
-                      value={roomCodeInput}
-                      onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
-                      placeholder="ENTER CODE"
-                      maxLength={6}
-                      className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-white/15 text-sm font-black uppercase tracking-widest text-center focus:outline-none focus:border-sky-400"
-                    />
-                    <button
-                      onClick={handleJoinCode}
-                      className="px-5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
-                    >
-                      Join
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-3 rounded-2xl p-3 bg-slate-900/90 border border-sky-400/30">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-[10px] text-slate-400 uppercase font-bold">Room Code</div>
-                      <div className="text-2xl font-black tracking-widest text-amber-300">
-                        {mp.room?.roomCode}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={copyRoomInvite}
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1 cursor-pointer"
-                      >
-                        {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        <span>{copiedCode ? 'Copied' : 'Invite'}</span>
-                      </button>
-                      <button
-                        onClick={() => mp.disconnect()}
-                        className="px-3 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-xs font-bold cursor-pointer"
-                      >
-                        Leave
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-[10px] font-bold uppercase text-sky-300">
-                      <span className="flex items-center gap-1">
-                        <Users className="w-3.5 h-3.5" /> Drivers ({mp.room?.players.length ?? 1}/8)
-                      </span>
-                      <button
-                        onClick={() => mp.setReady(!(localRoomPlayer?.ready ?? false))}
-                        className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 font-black cursor-pointer"
-                      >
-                        {localRoomPlayer?.ready ? 'Ready ✓' : 'Set Ready'}
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {mp.room?.players.map((p) => {
-                        const sp = getRacerById(p.characterId);
-                        return (
-                          <span
-                            key={p.id}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 text-xs font-bold border border-white/10"
-                          >
-                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: sp.primaryColor }} />
-                            <span>{p.name}</span>
-                            {p.isHost && <span className="text-amber-300">★</span>}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {localRoomPlayer?.isHost ? (
-                    <button
-                      onClick={() => mp.startRace()}
-                      className="w-full py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer"
-                    >
-                      Launch Multiplayer Race
-                    </button>
-                  ) : (
-                    <div className="text-center text-xs text-slate-400 font-semibold py-1">
-                      Waiting for Host to launch race...
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* ==================== CLOUD LEVEL UP CELEBRATION MODAL ==================== */}
+      {levelUpLevel !== null && (
+        <LevelUpCelebrationModal
+          newLevel={levelUpLevel}
+          onDismiss={() => setLevelUpLevel(null)}
+        />
       )}
 
       {/* ==================== 3. ACTIVE RACE HUD ==================== */}
@@ -1536,6 +1997,14 @@ export default function App() {
                     <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
                   <button
+                    onClick={() => setSettingsOpen(true)}
+                    className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-amber-300/70 cursor-pointer"
+                    style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
+                    title="Nintendo Settings"
+                  >
+                    <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-300" />
+                  </button>
+                  <button
                     onClick={enterLandscapeFullscreen}
                     className="p-1.5 sm:p-2.5 rounded-xl border border-white/20 hover:border-white/50 cursor-pointer"
                     style={{ backgroundColor: 'rgba(10, 15, 28, 0.84)' }}
@@ -1590,22 +2059,6 @@ export default function App() {
                 </span>
               </div>
             )}
-
-            {/* Bottom Perimeter: Active Desktop Control Hint (Bottom-Left) */}
-            <div className="flex items-end justify-between gap-4">
-              {hud.controlMode !== 'mobile_buttons' && hud.controlMode !== 'mobile_joystick' && (
-                <div
-                  className="hidden md:flex items-center gap-2 rounded-xl border border-white/15 px-3 py-1.5 font-hud text-[10px] font-bold uppercase tracking-wider text-slate-300"
-                  style={{ backgroundColor: 'rgba(10, 15, 28, 0.72)' }}
-                >
-                  {hud.controlMode === 'mouse'
-                    ? 'Mouse Steer · L-Click Gas · R-Click Drift · X / E Item'
-                    : hud.controlMode === 'controller'
-                    ? 'Controller · A/RT Gas · RB Drift · X/Y Item'
-                    : 'WASD/Arrows · Space Drift · X / E Item · C Rear'}
-                </div>
-              )}
-            </div>
           </div>
 
           {/* Transparent Bottom-Middle MiniMap */}
@@ -1765,7 +2218,7 @@ export default function App() {
               <Gamepad2 className="w-6 h-6 text-slate-500 shrink-0" />
             </div>
 
-            <div className="space-y-2 max-h-[46vh] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[46vh] overflow-y-auto no-scrollbar pr-1">
               {hud.standings.map((row) => {
                 const racerSpec = getRacerById(row.characterId);
                 const vehSpec = getVehicleById(row.vehicleId);
@@ -1819,13 +2272,22 @@ export default function App() {
 
             <div className="flex flex-wrap gap-2.5">
               {hud.mode === 'paused' ? (
-                <button
-                  onClick={() => engineRef.current?.setPaused(false)}
-                  className="flex-1 py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <Play className="w-4 h-4" />
-                  <span>Resume</span>
-                </button>
+                <>
+                  <button
+                    onClick={() => engineRef.current?.setPaused(false)}
+                    className="flex-1 py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Play className="w-4 h-4" />
+                    <span>Resume</span>
+                  </button>
+                  <button
+                    onClick={() => setSettingsOpen(true)}
+                    className="px-4 py-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-mk text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span>Settings</span>
+                  </button>
+                </>
               ) : (
                 <>
                   {hud.hasReplay && (
@@ -1864,6 +2326,26 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ==================== 6. NINTENDO SETTINGS MODAL ==================== */}
+      <NintendoSettingsModal
+        open={settingsOpen}
+        smartSteering={smartSteering}
+        autoAccel={autoAccel}
+        autoUseItem={autoUseItem}
+        controlMode={controlMode}
+        cameraTilt={cameraTilt}
+        soundMuted={muted}
+        onChangeSmartSteering={setSmartSteering}
+        onChangeAutoAccel={setAutoAccel}
+        onChangeAutoUseItem={setAutoUseItem}
+        onChangeControlMode={setControlMode}
+        onChangeCameraTilt={setCameraTilt}
+        onChangeSoundMuted={applyMuted}
+        onReturnHome={handleReturnToTitle}
+        onClose={() => setSettingsOpen(false)}
+        onPlaySelect={() => engineRef.current?.audio.playSelect()}
+      />
     </div>
   );
 }

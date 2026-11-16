@@ -294,6 +294,34 @@ export class ProceduralAudioEngine {
     this.playTone(185, 0.36, 'square', 0.15, 38, 0.03);
   }
 
+  public playFireball(): void {
+    this.playNoiseBurst(0.18, 1600, 0.16);
+    this.playTone(620, 0.16, 'sawtooth', 0.14, 210);
+    this.playTone(940, 0.1, 'triangle', 0.1, 440, 0.02);
+  }
+
+  public playBell(): void {
+    this.playTone(1046.5, 0.18, 'sine', 0.16);
+    this.playTone(1567.98, 0.22, 'triangle', 0.14, undefined, 0.045);
+    this.playTone(2093.0, 0.26, 'sine', 0.12, undefined, 0.09);
+  }
+
+  public playBalloonShield(): void {
+    this.playTone(392, 0.12, 'sine', 0.14, 784);
+    this.playTone(587.33, 0.15, 'triangle', 0.12, 988, 0.04);
+  }
+
+  public playHeavySplash(): void {
+    this.playNoiseBurst(0.26, 320, 0.24);
+    this.playTone(140, 0.28, 'triangle', 0.22, 52);
+    this.playTone(220, 0.18, 'sawtooth', 0.14, 75, 0.02);
+  }
+
+  public playBumpSpark(): void {
+    this.playNoiseBurst(0.08, 3200, 0.11);
+    this.playTone(720, 0.07, 'square', 0.08, 360);
+  }
+
   public playLap(finalLap: boolean): void {
     if (finalLap) {
       // Iconic Mario Kart Final Lap warning siren + upbeat tempo shift

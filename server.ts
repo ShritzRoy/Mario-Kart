@@ -23,6 +23,8 @@ interface RoomInternal {
   phase: 'lobby' | 'countdown' | 'racing' | 'finished';
   countdownValue: number;
   raceStartTimeMs: number;
+  mapId: string;
+  weatherChoice: string;
   players: Map<string, NetPlayerInfo>;
   karts: Map<string, NetKartState>;
   hazards: Map<string, NetHazard>;
@@ -51,6 +53,8 @@ function getOrCreateRoom(roomCode: string): RoomInternal {
       phase: 'lobby',
       countdownValue: 3,
       raceStartTimeMs: 0,
+      mapId: 'plaza',
+      weatherChoice: 'sunny',
       players: new Map(),
       karts: new Map(),
       hazards: new Map(),
@@ -71,6 +75,8 @@ function serializeRoom(room: RoomInternal): NetRoomSnapshot {
     phase: room.phase,
     countdownValue: room.countdownValue,
     raceStartTimeMs: room.raceStartTimeMs,
+    mapId: room.mapId,
+    weatherChoice: room.weatherChoice,
     players: Array.from(room.players.values()).sort((a, b) => a.slotIndex - b.slotIndex),
     karts: kartsObj,
     hazards: Array.from(room.hazards.values()),
@@ -149,12 +155,133 @@ function removePlayerFromRoom(ws: WebSocket): void {
   broadcastRoom(room);
 }
 
+import fs from 'fs';
+
+interface CloudPlayerProfileInternal {
+  username: string;
+  level: number;
+  xp: number;
+  playtimeSeconds: number;
+  racesCompleted: number;
+  wins: number;
+  podiums: number;
+  favoriteCharacter: string;
+  favoriteVehicle: string;
+  lastActiveMs: number;
+}
+
+const PROFILES_FILE = path.resolve(__dirname, 'cloud_profiles.json');
+const profiles = new Map<string, CloudPlayerProfileInternal>();
+
+function loadProfilesFromDisk() {
+  try {
+    if (fs.existsSync(PROFILES_FILE)) {
+      const raw = fs.readFileSync(PROFILES_FILE, 'utf-8');
+      const list = JSON.parse(raw) as CloudPlayerProfileInternal[];
+      if (Array.isArray(list)) {
+        for (const p of list) {
+          if (p && p.username) profiles.set(p.username.toLowerCase(), p);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Could not load profiles file:', err);
+  }
+}
+
+let saveDebounceTimer: NodeJS.Timeout | null = null;
+function saveProfilesToDisk() {
+  if (saveDebounceTimer) return;
+  saveDebounceTimer = setTimeout(() => {
+    saveDebounceTimer = null;
+    try {
+      const arr = Array.from(profiles.values());
+      fs.writeFileSync(PROFILES_FILE, JSON.stringify(arr, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn('Failed to persist profiles:', err);
+    }
+  }, 1000);
+}
+
+loadProfilesFromDisk();
+
+function getOrCreateProfile(rawUsername: string): CloudPlayerProfileInternal {
+  const clean = (rawUsername || 'Racer').trim().slice(0, 16);
+  const key = clean.toLowerCase();
+  let p = profiles.get(key);
+  if (!p) {
+    p = {
+      username: clean,
+      level: 1,
+      xp: 0,
+      playtimeSeconds: 0,
+      racesCompleted: 0,
+      wins: 0,
+      podiums: 0,
+      favoriteCharacter: 'mario',
+      favoriteVehicle: 'standard_kart',
+      lastActiveMs: Date.now(),
+    };
+    profiles.set(key, p);
+    saveProfilesToDisk();
+  }
+  return p;
+}
+
+function calculateNextLevelXp(level: number): number {
+  return 100 + level * 50;
+}
+
+const MAP_NAMES: Record<string, string> = {
+  plaza: 'Shritiz Coconut Plaza',
+  meadow: 'Sunlit Meadow Highway',
+  stadium: 'Coliseum Grand Prix',
+  skyline: 'Skyline Overpass',
+  slanted_canyon: 'Red Rock Slanted Canyon (45° Bank)',
+  rainbow_road: 'Rainbow Galaxy Road',
+  volcano_ridge: "Bowser's Molten Ridge",
+  shritiz_circuit: 'Royal Shritiz GP Circuit',
+};
+
 async function bootstrap() {
   const app = express();
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, rooms: rooms.size });
+    res.json({ ok: true, rooms: rooms.size, profiles: profiles.size });
+  });
+
+  // 1. List currently hosted rooms on the game cloud server
+  app.get('/api/rooms', (_req, res) => {
+    const list = Array.from(rooms.values()).map((r) => {
+      const host = Array.from(r.players.values()).find((p) => p.isHost);
+      return {
+        roomCode: r.roomCode,
+        hostName: host ? host.name : 'Host',
+        mapId: r.mapId,
+        mapName: MAP_NAMES[r.mapId] || 'Shritiz Coconut Plaza',
+        weatherChoice: r.weatherChoice,
+        playerCount: r.players.size,
+        maxPlayers: 8,
+        phase: r.phase,
+      };
+    });
+
+    // If no rooms currently created, offer standard Grand Prix public room so players can immediately hop in
+    if (list.length === 0) {
+      list.push({
+        roomCode: 'GP01',
+        hostName: 'Grand Prix Lobby',
+        mapId: 'plaza',
+        mapName: 'Shritiz Coconut Plaza',
+        weatherChoice: 'sunny',
+        playerCount: 0,
+        maxPlayers: 8,
+        phase: 'lobby',
+      });
+    }
+
+    res.json({ rooms: list });
   });
 
   app.get('/api/rooms/:code', (req, res) => {
@@ -165,6 +292,93 @@ async function bootstrap() {
       playerCount: room ? room.players.size : 0,
       phase: room ? room.phase : 'lobby',
     });
+  });
+
+  // 2. Cloud Profile Get
+  app.get('/api/profile/:username', (req, res) => {
+    const prof = getOrCreateProfile(req.params.username);
+    res.json({ profile: prof });
+  });
+
+  // 3. Cloud Profile Save / Level Up System with XP & Playtime
+  app.post('/api/profile/save', (req, res) => {
+    const {
+      username,
+      xpGain = 0,
+      playtimeGainSec = 0,
+      raceFinished = false,
+      won = false,
+      podium = false,
+      favoriteCharacter,
+      favoriteVehicle,
+    } = req.body || {};
+
+    const prof = getOrCreateProfile(username);
+    prof.lastActiveMs = Date.now();
+
+    if (favoriteCharacter) prof.favoriteCharacter = favoriteCharacter;
+    if (favoriteVehicle) prof.favoriteVehicle = favoriteVehicle;
+    if (playtimeGainSec > 0) prof.playtimeSeconds += Math.min(playtimeGainSec, 600);
+
+    let leveledUp = false;
+    let oldLevel = prof.level;
+
+    if (raceFinished) {
+      prof.racesCompleted += 1;
+      if (won) prof.wins += 1;
+      if (podium) prof.podiums += 1;
+    }
+
+    if (xpGain > 0) {
+      prof.xp += Math.round(xpGain);
+      let nextReq = calculateNextLevelXp(prof.level);
+      while (prof.xp >= nextReq) {
+        prof.xp -= nextReq;
+        prof.level += 1;
+        leveledUp = true;
+        nextReq = calculateNextLevelXp(prof.level);
+      }
+    }
+
+    saveProfilesToDisk();
+    res.json({
+      ok: true,
+      profile: prof,
+      leveledUp,
+      levelsGained: prof.level - oldLevel,
+      newLevel: prof.level,
+      nextLevelXpReq: calculateNextLevelXp(prof.level),
+    });
+  });
+
+  // 4. Global Online Cloud Leaderboard
+  app.get('/api/leaderboard', (_req, res) => {
+    const sorted = Array.from(profiles.values())
+      .sort((a, b) => {
+        if (b.level !== a.level) return b.level - a.level;
+        if (b.xp !== a.xp) return b.xp - a.xp;
+        if (b.playtimeSeconds !== a.playtimeSeconds) return b.playtimeSeconds - a.playtimeSeconds;
+        return b.wins - a.wins;
+      })
+      .slice(0, 50)
+      .map((p, idx) => ({
+        rank: idx + 1,
+        username: p.username,
+        level: p.level,
+        xp: p.xp,
+        nextLevelXp: calculateNextLevelXp(p.level),
+        playtimeSeconds: p.playtimeSeconds,
+        playtimeFormatted: `${Math.floor(p.playtimeSeconds / 3600)}h ${Math.floor(
+          (p.playtimeSeconds % 3600) / 60
+        )}m`,
+        racesCompleted: p.racesCompleted,
+        wins: p.wins,
+        podiums: p.podiums,
+        favoriteCharacter: p.favoriteCharacter,
+        favoriteVehicle: p.favoriteVehicle,
+      }));
+
+    res.json({ leaderboard: sorted });
   });
 
   const server = http.createServer(app);
@@ -191,6 +405,7 @@ async function bootstrap() {
           id: playerId,
           name: (msg.playerName || 'Driver').slice(0, 16),
           characterId: msg.characterId || 'mario',
+          variantId: msg.variantId || 'default',
           vehicleId: msg.vehicleId || 'standard_kart',
           ready: false,
           isHost: room.players.size === 0,
@@ -218,10 +433,17 @@ async function bootstrap() {
 
       if (msg.type === 'room:selectCharacter') {
         player.characterId = msg.characterId;
+        if (msg.variantId !== undefined) player.variantId = msg.variantId;
         broadcastRoom(room);
       } else if (msg.type === 'room:selectVehicle') {
         player.vehicleId = msg.vehicleId;
         broadcastRoom(room);
+      } else if (msg.type === 'room:setCourse') {
+        if (player.isHost) {
+          room.mapId = msg.mapId || room.mapId;
+          room.weatherChoice = msg.weatherChoice || room.weatherChoice;
+          broadcastRoom(room);
+        }
       } else if (msg.type === 'room:setReady') {
         player.ready = msg.ready;
         broadcastRoom(room);
@@ -269,10 +491,15 @@ async function bootstrap() {
     const dt = 0.05;
     for (const room of rooms.values()) {
       if (room.phase === 'racing') {
-        // Tick server-side hazards
         for (const [id, hz] of room.hazards.entries()) {
           hz.ttl -= dt;
-          if (hz.kind === 'shell') {
+          if (
+            hz.kind === 'shell' ||
+            hz.kind === 'golden_fireball' ||
+            hz.kind === 'blue_shell' ||
+            hz.kind === 'purple_shell' ||
+            hz.kind === 'cannonball'
+          ) {
             hz.x += hz.vx * dt;
             hz.z += hz.vz * dt;
           }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ClientToServerMessage,
+  HitNoticeKind,
   NetHazard,
   NetKartState,
   NetRoomSnapshot,
@@ -9,7 +10,7 @@ import type {
 
 interface UseMultiplayerOptions {
   onSnapshot: (room: NetRoomSnapshot) => void;
-  onHitNotice: (targetId: string, attackerId: string, kind: 'shell' | 'banana' | 'star') => void;
+  onHitNotice: (targetId: string, attackerId: string, kind: HitNoticeKind) => void;
 }
 
 export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOptions) {
@@ -42,7 +43,13 @@ export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOp
   }, []);
 
   const joinRoom = useCallback(
-    (roomCode: string, playerName: string, characterId: string, vehicleId = 'standard_kart') => {
+    (
+      roomCode: string,
+      playerName: string,
+      characterId: string,
+      vehicleId = 'standard_kart',
+      variantId = 'default'
+    ) => {
       disconnect();
       setError(null);
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -58,6 +65,7 @@ export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOp
             roomCode,
             playerName,
             characterId,
+            variantId,
             vehicleId,
           } satisfies ClientToServerMessage)
         );
@@ -107,17 +115,19 @@ export function useMultiplayerRoom({ onSnapshot, onHitNotice }: UseMultiplayerOp
     error,
     joinRoom,
     disconnect,
-    selectCharacter: (characterId: string) =>
-      sendMsg({ type: 'room:selectCharacter', characterId }),
+    selectCharacter: (characterId: string, variantId?: string) =>
+      sendMsg({ type: 'room:selectCharacter', characterId, variantId }),
     selectVehicle: (vehicleId: string) =>
       sendMsg({ type: 'room:selectVehicle', vehicleId }),
+    setCourse: (mapId: string, weatherChoice: string) =>
+      sendMsg({ type: 'room:setCourse', mapId, weatherChoice }),
     setReady: (ready: boolean) => sendMsg({ type: 'room:setReady', ready }),
     startRace: () => sendMsg({ type: 'room:startRace' }),
     returnLobby: () => sendMsg({ type: 'room:returnLobby' }),
     sendKartState: (state: NetKartState) => sendMsg({ type: 'player:state', state }),
     spawnHazard: (hazard: NetHazard) => sendMsg({ type: 'item:spawnHazard', hazard }),
     removeHazard: (hazardId: string) => sendMsg({ type: 'item:removeHazard', hazardId }),
-    hitPlayer: (targetId: string, attackerId: string, kind: 'shell' | 'banana' | 'star') =>
+    hitPlayer: (targetId: string, attackerId: string, kind: HitNoticeKind) =>
       sendMsg({ type: 'item:hitPlayer', targetId, attackerId, kind }),
   };
 }

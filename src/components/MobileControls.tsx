@@ -66,7 +66,7 @@ export function MobileControls({
   const btnSmall = compact ? 38 : 46;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-2.5 sm:bottom-4 px-2.5 sm:px-5 flex items-end justify-between z-30">
+    <div className="pointer-events-none fixed inset-x-0 bottom-2.5 sm:bottom-4 px-2.5 sm:px-5 flex items-end justify-between z-30 font-mk">
       {/* Left Thumb Zone: Circular Analog Joystick OR Circular Left/Right Steer Buttons */}
       {useJoystick ? (
         <div
